@@ -9,6 +9,8 @@
 
 import type { Artifact } from '../tools/artifacts.js';
 import { extractClaims, reconcile, type ReconcileReport } from './reconcile.js';
+import { completionClaimed } from './vigilance.js';
+import type { ToolObservation } from '../tools/types.js';
 
 /**
  * Every named enforcement point in this runtime, and where it actually lives.
@@ -27,6 +29,7 @@ export const ENFORCEMENT_POINTS: Record<string, string> = {
   'gates.numbersReconciled': 'src/engine/gates.ts — numbersReconciled',
   'gates.reviewCompleted': 'src/engine/gates.ts — reviewCompleted',
   'gates.sandboxOutputValidated': 'src/engine/gates.ts — sandboxOutputValidated',
+  'gates.completionSupported': 'src/engine/gates.ts — completionSupported',
 };
 
 export function knownEnforcementPoints(): Set<string> {
@@ -43,6 +46,8 @@ export interface GateFinding {
 }
 
 export interface VerificationInput {
+  /** What the tools actually did, so a claim can be checked against it. */
+  observations?: ToolObservation[];
   draft: string;
   artifacts: Artifact[];
   /** Set when the active skill declares review: guardian | critic. */
@@ -131,7 +136,26 @@ export function sandboxOutputValidated(input: VerificationInput): GateFinding {
 export function runVerificationGates(input: VerificationInput): GateFinding[] {
   const findings: GateFinding[] = [reviewCompleted(input), sandboxOutputValidated(input)];
   if (input.usedTools) findings.push(numbersReconciled(input));
+  if (input.observations) findings.push(completionSupported(input));
   return findings;
+}
+
+/**
+ * "Done" is a claim like any other. A run that processed 11 of 12 customers and reported
+ * all 144 records complete was not lying — it believed it, which is why the belief cannot
+ * be the check. This compares the claim against what the tools actually did.
+ */
+function completionSupported(input: VerificationInput): GateFinding {
+  const check = completionClaimed(input.draft, input.observations ?? []);
+  return {
+    gate: 'gates.completionSupported',
+    ruleId: 'rule/completion-must-be-observed',
+    passed: check.ok,
+    detail: check.detail,
+    ...(check.ok
+      ? {}
+      : { backtrack: 'name the part that did not complete, or verify it before claiming it' }),
+  };
 }
 
 /** What the loop tells the model when a gate blocks. Specific, and one message. */
