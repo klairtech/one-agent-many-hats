@@ -55,6 +55,36 @@ function pickLocalOverrides(
   return out;
 }
 
+/**
+ * Whether a tool can actually do anything right now. A tool that is present but has no
+ * credential, host or server configured looks identical to a working one in a plain list,
+ * which is how "why did it not search the web" becomes a mystery.
+ */
+function toolReadiness(name: string, session: Session): { ok: boolean; why: string } {
+  const cfg = session.config;
+  const needsNet = ['fetch_url', 'web_search', 'browser_open', 'browser_read', 'browser_act', 'browser_shot', 'ssh_run', 'send_email'];
+  if (needsNet.includes(name) && !cfg.network.enabled) {
+    return { ok: false, why: 'tool network egress is off' };
+  }
+  if (name === 'web_search') {
+    const has = ['brave', 'tavily', 'serper'].some((p) => getCredential(`search:${p}`));
+    return has ? { ok: true, why: 'search provider configured' } : { ok: false, why: 'no search provider key — searching the web will fail' };
+  }
+  if (name === 'ssh_run') {
+    const hosts = Object.keys(cfg.remote?.hosts ?? {}).length;
+    return hosts ? { ok: true, why: `${hosts} host(s) configured` } : { ok: false, why: 'no hosts configured' };
+  }
+  if (name === 'send_email') {
+    if (!cfg.email?.host) return { ok: false, why: 'no mail server configured' };
+    const to = cfg.email.allowRecipients?.length ?? 0;
+    return to ? { ok: true, why: `${to} allowed recipient(s)` } : { ok: false, why: 'no allowed recipients' };
+  }
+  if (name === 'transcribe_audio') {
+    return { ok: true, why: 'uses a local whisper binary, or a provider endpoint' };
+  }
+  return { ok: true, why: '' };
+}
+
 /** The only files /brand/ will ever serve. A fixed list, not a path lookup. */
 const BRAND_FILES = [
   'klair-logo-dark.png',
@@ -182,8 +212,13 @@ export async function startUi(
         // the stale copy back and silently reverted it — the frontier tier went back to
         // haiku hours after being pointed at sonnet, with nothing to show why.
         // [Seen in a live run, 2026-08-15.]
+        // Mutated in place, never reassigned. ProviderPool holds a reference to this
+        // object and reads it live on every resolve, so replacing it silently detaches the
+        // pool — the panel saved a new tier binding to disk and kept using the old model,
+        // with nothing in the UI to show why. [Seen in a live run, 2026-08-15.]
         const onDisk = await loadConfig();
-        session.config = { ...onDisk, ...pickLocalOverrides(session.config, onDisk) };
+        const keep = pickLocalOverrides(session.config, onDisk);
+        Object.assign(session.config, onDisk, keep);
 
         if (body.provider) session.config.defaultProvider = body.provider;
         if (body.tiers) session.config.tiers = { ...session.config.tiers, ...body.tiers };
@@ -513,12 +548,29 @@ export async function startUi(
             statement: r.statement,
           })),
           mcp: session.mcp.connections,
-          tools: session.handlers.map((h) => ({
-            name: h.spec.name,
-            mutating: h.spec.mutating,
-            minProfile: h.spec.minProfile,
-            description: h.spec.description.slice(0, 140),
-          })),
+          tools: session.handlers.map((h) => {
+            const name = h.spec.name;
+            const mcp = name.startsWith('mcp__') ? name.split('__')[1] : null;
+            return {
+              name,
+              mutating: h.spec.mutating,
+              network: h.spec.network === true,
+              minProfile: h.spec.minProfile,
+              description: h.spec.description,
+              // Where it comes from, so a connector's tools are not mixed in with built-ins.
+              source: mcp ? `mcp:${mcp}` : 'built-in',
+              // Which skills may call it — the allowlist is an intersection, so a tool
+              // nothing names can never run, and that is worth being able to see.
+              usedBy: session.registry
+                .outcomes()
+                .filter((sk) =>
+                  sk.tools.some((t) => (t.endsWith('*') ? name.startsWith(t.slice(0, -1)) : t === name)),
+                )
+                .map((sk) => sk.id.replace('outcome/', '')),
+              // Whether the thing it needs is actually set up.
+              ready: toolReadiness(name, session),
+            };
+          }),
         });
 
       case 'GET /api/schedules': {

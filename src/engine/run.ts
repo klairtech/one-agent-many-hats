@@ -165,10 +165,18 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
     });
   }
 
-  const stepBudget = Math.min(
-    outcome.stepBudget ?? opts.config.limits.stepBudget,
-    opts.config.limits.stepBudget * 2,
-  );
+  // A step counter cannot tell whether step 19 was progress or thrashing, so it stops good
+  // runs and lets bad ones burn to the ceiling either way. `limits.stepBudget: 0` means no
+  // counter at all: the run ends when it delivers, or when it stops making progress — which
+  // is the condition anyone actually cares about. A ceiling is still available for people
+  // who want a hard cost cap.
+  const unlimited = opts.config.limits.stepBudget === 0;
+  const stepBudget = unlimited
+    ? Number.MAX_SAFE_INTEGER
+    : Math.min(
+        outcome.stepBudget ?? opts.config.limits.stepBudget,
+        opts.config.limits.stepBudget * 2,
+      );
 
   const sandboxDescriptors: string[] = [];
   const ctx: ToolContext = {
@@ -207,6 +215,8 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
   let emptyTurns = 0;
   /** Said once. A nudge repeated every step is noise the model learns to skip. */
   let stallWarned = false;
+  /** Set when a run that is going nowhere has been told to deliver. Ends the loop. */
+  let stalledOut = false;
   let protocolDowngraded = false;
   let reviewVerdict: { role: string; verdict: string; detail: string } | undefined;
   /** The exact text handed to the reviewer, so a PASS delivers it verbatim. */
@@ -230,9 +240,13 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
   };
 
   try {
-    while (step < stepBudget) {
+    // `stalledOut` is what ends an unlimited run: the counter is gone, so "it has stopped
+    // getting anywhere" is the terminating condition.
+    while (step < stepBudget && !stalledOut) {
       step++;
-      const exhausted = step >= stepBudget;
+      const exhausted = step >= stepBudget || stalledOut;
+      // So a tool denial on the final step explains itself rather than blaming the allowlist.
+      ctx.budgetExhausted = exhausted;
       const lastText = lastAssistantText(messages);
       const lastToolNames = observations.slice(-3).map((o) => o.tool);
 
@@ -310,7 +324,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       });
       emit({
         type: 'step',
-        message: `step ${step}/${stepBudget} · ${stage} · ${tier.tier} (${bound.providerId}/${bound.model})`,
+        message: `step ${step}${unlimited ? '' : `/${stepBudget}`} · ${stage} · ${tier.tier} (${bound.providerId}/${bound.model})`,
         data: { step, stage, tier: tier.tier },
       });
 
@@ -352,6 +366,19 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
         stallWarned = true;
         emit({ type: 'note', message: `not making progress — ${circling.reason.split('.')[0]}` });
         await record({ role: 'user', content: `Stop and reconsider: ${circling.reason}` });
+      } else if (circling.stalled && stallWarned) {
+        // Warned once and still going in circles. With no step counter this is the
+        // terminating condition: something has to end an unbounded loop, and "it is no
+        // longer getting anywhere" is a better reason than "it reached nineteen".
+        stalledOut = true;
+        emit({ type: 'note', message: 'still not making progress — delivering what it has' });
+        await record({
+          role: 'user',
+          content:
+            'You are repeating yourself and it is not working. Deliver the best answer the ' +
+            'evidence above supports, state plainly what you could not establish and why, ' +
+            'and do not call another tool.',
+        });
       }
 
       // --- acting ---

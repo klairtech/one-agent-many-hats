@@ -50,7 +50,7 @@ const ROUTE_SIGNALS: Array<{
     // whose allowlist has no write_file, so the standing grant that would have permitted
     // the write was never even consulted. [Seen in a live scheduled run, 2026-08-14.]
     words:
-      /\b(edit|change|fix|patch|refactor|rename|add (?:a )?(?:function|file|test|field)|implement|update the|delete|remove the)\b|\b(?:write|save|create|generate|append(?: to)?|output)\b[^.]{0,30}?(?:\b(?:a|the)\b\s+)?(?:file|report|summary|note|doc(?:ument)?|[\w./-]+\.[a-z]{1,5})\b/i,
+      /\b(edit|change|fix|patch|refactor|rename|add (?:a )?(?:function|file|test|field)|implement|update the|delete|remove the|build (?:me )?(?:a|an|the)?|make (?:me )?(?:a|an) (?:tool|connector|script|parser|adapter|integration)|create (?:a|an) (?:tool|connector|script|parser|adapter|integration|file))\b|\b(?:write|save|create|generate|append(?: to)?|output)\b[^.]{0,30}?(?:\b(?:a|the)\b\s+)?(?:file|report|summary|note|doc(?:ument)?|[\w./-]+\.[a-z]{1,5})\b/i,
     needsWrite: true,
   },
   {
@@ -287,7 +287,11 @@ function matchesTrigger(haystack: string, trigger: string): boolean {
  * chosen by keyword during work: a mis-selected coder must not be able to delete the file
  * tools the run needs. Selection is heuristic; capability removal should not be.
  */
-const NARROWING_ROLES = new Set(['guardian', 'critic', 'reflector']);
+// The reflector is deliberately absent. It is a delivery pass, not a review pass, and
+// stripping its tools produced "not permitted by the active skill's allowlist" on the last
+// step of a run that had simply run out of room — a permission error for something that was
+// never a permission problem. [Seen in a live run, 2026-08-15.]
+const NARROWING_ROLES = new Set(['guardian', 'critic']);
 
 // --- 4. Model tier ----------------------------------------------------------------
 

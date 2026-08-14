@@ -19,6 +19,7 @@ import { emailTools } from './builtin/email.js';
 import { audioTools } from './builtin/audio.js';
 import { browserTools } from './builtin/browser.js';
 import { patchTools } from './builtin/patch.js';
+import { searchTools } from './builtin/search.js';
 import { systemTools } from './builtin/system.js';
 import { sandboxTools } from './sandbox/sandbox.js';
 import type { ToolHandler } from './types.js';
@@ -36,6 +37,7 @@ export const ALL_TOOLS: ToolHandler[] = [
   ...audioTools,
   ...browserTools,
   ...patchTools,
+  ...searchTools,
   ...systemTools,
 ];
 

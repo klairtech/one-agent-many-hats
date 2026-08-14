@@ -279,3 +279,37 @@ test('tool calls over the per-step limit still get an answer', async () => {
     await cleanup(home, ws);
   }
 });
+
+/**
+ * A step counter cannot tell progress from thrashing, so it cuts good runs short and lets
+ * bad ones burn to the ceiling regardless. With `limits.stepBudget: 0` there is no counter
+ * and the run ends when it stops getting anywhere instead.
+ */
+test('with no step budget, a run that goes in circles still ends', async () => {
+  const { home, ws, config, registry, pool, memory } = await harness([
+    // The same fruitless call over and over, then a delivery once told to stop.
+    ...Array.from({ length: 12 }, () => ({
+      text: 'trying again',
+      toolCalls: [{ name: 'search_files', args: { pattern: 'nothing-matches-this' } }],
+    })),
+    { text: 'I could not find it. Here is what I established and what I could not.' },
+    { text: 'PASS' },
+  ]);
+  config.limits.stepBudget = 0;
+
+  try {
+    const result = await runAgent({
+      request: 'find the widget',
+      workspaceRoot: ws,
+      config,
+      registry,
+      pool,
+      memory,
+    });
+    // It must terminate — an unbounded loop that never stops is the thing to avoid.
+    assert.ok(result.steps < 12, `ran ${result.steps} steps before noticing it was stuck`);
+    assert.ok(result.answer.length > 0, 'it should still deliver something');
+  } finally {
+    await cleanup(home, ws);
+  }
+});

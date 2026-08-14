@@ -12,7 +12,7 @@ import test from 'node:test';
 import { renderMarkdown, escapeHtml } from '../src/ui/markdown.js';
 import { classify, listDirectory, preview } from '../src/ui/files.js';
 import { formatBytes, prune, runIdTime, scanSpace } from '../src/core/space.js';
-import { cleanup, tempHome, tempWorkspace } from './helpers.js';
+import { cleanup, tempHome, tempWorkspace, testConfig } from './helpers.js';
 
 test('markdown escapes before it renders, so nothing becomes live HTML', () => {
   const html = renderMarkdown('Hello <script>alert(1)</script> and <img src=x onerror=y>');
@@ -203,4 +203,35 @@ test('the page has no stray backticks in it', () => {
   const html = renderPage('test-token');
   assert.ok(html.length > 10_000, 'the page rendered suspiciously short');
   assert.ok(!html.includes('${'), 'an unexpanded template placeholder reached the page');
+});
+
+/**
+ * ProviderPool reads its config object live on every resolve, so the panel must mutate
+ * `session.config` rather than replace it. Reassigning detached the pool: the panel wrote a
+ * new tier binding to disk, reported success, and carried on calling the old model with
+ * nothing in the interface to show why.
+ */
+test('changing a tier reaches the provider pool that was built before it', async () => {
+  const home = await tempHome();
+  try {
+    const { ProviderPool } = await import('../src/providers/index.js');
+    const config = testConfig();
+    config.tiers = { ...config.tiers, frontier: 'mock/big' };
+
+    // Built once, as the panel does at startup.
+    const pool = new ProviderPool(config);
+    assert.equal(pool.resolve('frontier').model, 'big');
+
+    // What the panel does on save: read from disk and merge onto the same object.
+    const fromDisk = { ...config, tiers: { ...config.tiers, frontier: 'mock/small' } };
+    Object.assign(config, fromDisk);
+
+    assert.equal(
+      pool.resolve('frontier').model,
+      'small',
+      'the pool did not see the new binding — session.config was replaced rather than mutated',
+    );
+  } finally {
+    await cleanup(home);
+  }
 });
