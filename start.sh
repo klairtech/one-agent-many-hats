@@ -103,26 +103,47 @@ PORT="${HATS_UI_PORT:-4173}"
 # If something already holds the port, say what it is rather than dying with a raw
 # EADDRINUSE. Nearly always it is a panel from an earlier session that is still running,
 # and the useful thing is to say so and offer both ways out.
+# lsof exits 1 when nothing matches, and this script runs `set -euo pipefail`, so without
+# the `|| true` a *free* port killed the script before it started anything. Returns the
+# holding pid, or nothing.
 port_holder() {
   if command -v lsof >/dev/null 2>&1; then
-    lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1 || true
   fi
 }
 
 HOLDER="$(port_holder "$PORT")"
 if [ -n "$HOLDER" ]; then
   if ps -p "$HOLDER" -o command= 2>/dev/null | grep -q "main.js ui"; then
-    warn "a control panel is already running on port $PORT (pid $HOLDER)"
-    printf '%s\n' "     Its address carries a token printed when it started, so it cannot be"
-    printf '%s\n' "     reconstructed here. Either stop it and run this again:"
-    printf '\n       kill %s && ./start.sh\n\n' "$HOLDER"
-    printf '%s\n' "     or start a second one on another port:"
-    printf '\n       HATS_UI_PORT=%s ./start.sh\n\n' "$((PORT + 1))"
+    # Our own panel from an earlier session. Restarting is the whole point of running this
+    # command again, so take the port back rather than making you do it by hand.
+    step "stopping the control panel already on port $PORT (pid $HOLDER)"
+    kill "$HOLDER" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      if [ -z "$(port_holder "$PORT")" ]; then break; fi
+      sleep 0.25
+    done
+    # Only if it ignored SIGTERM.
+    if [ -n "$(port_holder "$PORT")" ]; then
+      kill -9 "$HOLDER" 2>/dev/null || true
+      sleep 0.5
+    fi
+    # The scheduler lock belongs to that process; a stale one would make the new panel
+    # refuse to fire schedules.
+    rm -f "${HATS_HOME:-$HOME/.hats}/scheduler.lock"
+    if [ -z "$(port_holder "$PORT")" ]; then
+      ok "port $PORT reclaimed"
+    else
+      die "could not free port $PORT (pid $HOLDER)"
+    fi
   else
-    warn "port $PORT is held by pid $HOLDER, which is not a control panel"
+    # Somebody else's process. Killing it is not ours to do.
+    warn "port $PORT is held by pid $HOLDER, which is not a control panel:"
+    printf '       %s\n\n' "$(ps -p "$HOLDER" -o command= 2>/dev/null | cut -c1-70)"
+    printf '%s\n' "     Stop it yourself, or use another port:"
     printf '\n       HATS_UI_PORT=%s ./start.sh\n\n' "$((PORT + 1))"
+    exit 1
   fi
-  exit 1
 fi
 
 step "starting the control panel"
