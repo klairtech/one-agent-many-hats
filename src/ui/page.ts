@@ -1546,23 +1546,71 @@ async function loadRegistry() {
   const to = el('section', 'sect');
   to.appendChild(el('p', 'h3', 'Tools'));
   to.appendChild(el('p', 'xs note', 'The entire action surface. Everything passes one executor, which checks the registry, the allowlist, the profile, the schema, the gates and your approval before anything runs.'));
-  const tul = el('ul', 'rowlist');
-  r.tools.forEach((t) => {
-    const li = el('li');
-    li.appendChild(statusPill(t.mutating ? 'changes things' : 'read-only', t.mutating ? 'warn' : 'ok'));
-    const mid = st(el('span'), 'min-width:200px;flex:1');
-    mid.appendChild(st(el('span', 'sm mono', t.name), 'display:block'));
-    mid.appendChild(st(el('span', 'xs', t.description), 'display:block;color:var(--ink-3);text-wrap:pretty'));
-    li.appendChild(mid);
-    li.appendChild(st(el('span', 'xs', 'needs ' + t.minProfile), 'flex:none;color:var(--ink-3)'));
-    tul.appendChild(li);
-  });
+
+  // Anything that needs setting up and has not been comes first. A tool that is present but
+  // unusable looks identical to a working one in a plain list, which is how "why did it not
+  // search the web" turns into a mystery.
+  const notReady = r.tools.filter((t) => !t.ready.ok);
+  if (notReady.length) {
+    to.appendChild(el('p', 'xs callout warn')).textContent =
+      notReady.length + ' tool(s) are present but cannot do anything yet: ' +
+      notReady.map((t) => t.name + ' (' + t.ready.why + ')').join('; ');
+  }
+
+  const tul = st(el('div'), 'display:flex;flex-direction:column;gap:1px;background:var(--line);border-radius:14px;overflow:hidden;margin-top:12px');
+  r.tools
+    .slice()
+    .sort((a, b) => Number(a.ready.ok) - Number(b.ready.ok) || a.name.localeCompare(b.name))
+    .forEach((t) => {
+      const row = st(el('div'), 'background:var(--canvas)');
+      const head = st(el('button'), 'display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:0;background:none;color:inherit;font-family:inherit;padding:11px 15px;cursor:pointer');
+      head.appendChild(statusPill(t.mutating ? 'writes' : 'reads', t.mutating ? 'warn' : 'ok'));
+      head.appendChild(st(el('span', 'sm mono', t.name), 'flex:1;min-width:0'));
+      if (!t.ready.ok) head.appendChild(statusPill('needs setup', 'dang'));
+      if (t.source !== 'built-in') head.appendChild(statusPill(t.source, 'idle'));
+      const chev = st(el('span', 'xs'), 'color:var(--ink-3)');
+      chev.textContent = '›';
+      head.appendChild(chev);
+      row.appendChild(head);
+
+      const body = st(el('div'), 'display:none;padding:0 15px 15px;border-top:1px solid var(--line)');
+      head.onclick = () => {
+        const open = body.style.display === 'block';
+        body.style.display = open ? 'none' : 'block';
+        chev.textContent = open ? '›' : '⌄';
+        if (open || body.dataset.built) return;
+        body.dataset.built = '1';
+        body.appendChild(st(el('p', 'sm', t.description), 'margin:12px 0 0;color:var(--ink-2);text-wrap:pretty'));
+        const facts = st(el('div'), 'display:grid;grid-template-columns:auto 1fr;gap:5px 14px;margin-top:12px');
+        const fact = (k, val) => {
+          facts.appendChild(st(el('span', 'xs', k), 'color:var(--ink-3)'));
+          facts.appendChild(st(el('span', 'xs'), 'color:var(--ink-2)')).textContent = val;
+        };
+        fact('profile', 'needs ' + t.minProfile);
+        fact('network', t.network ? 'reaches off this machine' : 'local only');
+        fact('approval', t.mutating ? 'asked for, unless a grant covers it' : 'not needed');
+        fact('available in', t.usedBy.length ? t.usedBy.join(', ') : 'no skill lists it — it can never run');
+        if (t.ready.why) fact('status', t.ready.why);
+        body.appendChild(facts);
+      };
+      row.appendChild(body);
+      tul.appendChild(row);
+    });
   to.appendChild(tul);
 
   const mc = el('section', 'sect');
   mc.appendChild(el('p', 'h3', 'MCP servers'));
   mc.appendChild(el('p', 'xs note', 'Configure these in config.json under "mcpServers". Their tools arrive as mcp__server__tool and pass through the same executor — but a server is a process we did not write, so anything it does not mark read-only is treated as able to change things.'));
-  if (!r.mcp.length) mc.appendChild(st(el('p', 'sm', 'None configured.'), 'margin:11px 0 0;color:var(--ink-2)'));
+  if (!r.mcp.length) {
+    const none = st(el('div'), 'margin:11px 0 0');
+    none.appendChild(st(el('p', 'sm', 'No MCP servers connected, so no mcp__ tools exist. That is the default — nothing is missing.'), 'margin:0;color:var(--ink-2);text-wrap:pretty'));
+    // Deliberately not named go: that shadows the router function of the same name, and
+    // the click would then try to call the button element.
+    const jump = el('button', 'btn2 btnsm', 'Add a connector');
+    jump.onclick = () => go('connectors');
+    none.appendChild(st(jump, 'margin-top:11px'));
+    mc.appendChild(none);
+  }
   else {
     const mul = el('ul', 'rowlist');
     r.mcp.forEach((c) => {

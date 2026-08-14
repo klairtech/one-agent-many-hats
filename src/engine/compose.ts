@@ -50,7 +50,7 @@ const ROUTE_SIGNALS: Array<{
     // whose allowlist has no write_file, so the standing grant that would have permitted
     // the write was never even consulted. [Seen in a live scheduled run, 2026-08-14.]
     words:
-      /\b(edit|change|fix|patch|refactor|rename|add (?:a )?(?:function|file|test|field)|implement|update the|delete|remove the)\b|\b(?:write|save|create|generate|append(?: to)?|output)\b[^.]{0,30}?(?:\b(?:a|the)\b\s+)?(?:file|report|summary|note|doc(?:ument)?|[\w./-]+\.[a-z]{1,5})\b/i,
+      /\b(edit|change|fix|patch|refactor|rename|add (?:a )?(?:function|file|test|field)|implement|update the|delete|remove the|build (?:me )?(?:a|an|the)?|make (?:me )?(?:a|an) (?:tool|connector|script|parser|adapter|integration)|create (?:a|an) (?:tool|connector|script|parser|adapter|integration|file))\b|\b(?:write|save|create|generate|append(?: to)?|output)\b[^.]{0,30}?(?:\b(?:a|the)\b\s+)?(?:file|report|summary|note|doc(?:ument)?|[\w./-]+\.[a-z]{1,5})\b/i,
     needsWrite: true,
   },
   {

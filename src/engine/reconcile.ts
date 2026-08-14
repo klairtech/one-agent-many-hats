@@ -61,6 +61,11 @@ export function extractClaims(draft: string): Claim[] {
     // [Found by a live run whose only "unreconciled" token was the reviewer's own
     // "26/26 specifics reconciled" score, 2026-08-14.]
     if (/^[\d.,/]+$/.test(token)) continue;
+    // "source/destination", "to/from", "read/write" are prose, not files. A real path in an
+    // answer almost always carries an extension or a directory that exists in a project; an
+    // English word pair carries neither, and demanding it be found in an artifact blocked
+    // two delivered answers on nothing. [Seen in a live run, 2026-08-15.]
+    if (!looksLikePath(token)) continue;
     if (add(seen, `path:${token}`)) {
       claims.push({ token, kind: 'path', normalised: token.toLowerCase() });
     }
@@ -81,6 +86,22 @@ export function extractClaims(draft: string): Claim[] {
   }
 
   return claims;
+}
+
+/**
+ * A slash between two dictionary words is not a path. Requires an extension, punctuation
+ * that prose does not use, a recognisable source directory, or three or more segments.
+ */
+function looksLikePath(token: string): boolean {
+  if (/\.[a-zA-Z0-9]{1,8}$/.test(token)) return true;
+  if (/[_~]|\.\.?\//.test(token)) return true;
+  const segments = token.split('/').filter(Boolean);
+  const DIRS = new Set([
+    'src', 'test', 'tests', 'lib', 'dist', 'docs', 'doc', 'packs', 'assets', 'scripts',
+    'runtime', 'public', 'app', 'bin', 'config', 'node_modules', 'build', 'out', 'data',
+  ]);
+  if (DIRS.has((segments[0] ?? '').toLowerCase())) return true;
+  return segments.length >= 3;
 }
 
 export function reconcile(claims: Claim[], artifacts: Artifact[]): ReconcileReport {
