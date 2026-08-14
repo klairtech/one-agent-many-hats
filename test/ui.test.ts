@@ -6,6 +6,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { renderPage } from "../src/ui/page.js";
 import test from 'node:test';
 
 import { renderMarkdown, escapeHtml } from '../src/ui/markdown.js';
@@ -175,4 +176,31 @@ test('byte formatting is readable', () => {
   assert.equal(formatBytes(512), '512 B');
   assert.equal(formatBytes(2048), '2 KB');
   assert.match(formatBytes(5 * 1024 * 1024), /5\.0 MB/);
+});
+
+/**
+ * The page is one big template literal, so a broken escape inside it is still a perfectly
+ * valid TypeScript string — `tsc` compiles it, the tests pass, and the panel serves a page
+ * whose script dies on load with a blank screen. That shipped to main once: a `\n` written
+ * where `\\n` was needed became a real newline inside a JS string literal.
+ *
+ * Parsing the emitted script is the only check that catches it.
+ */
+test('the page it serves is syntactically valid JavaScript', () => {
+  const html = renderPage('test-token');
+  const open = html.indexOf('<script>');
+  const close = html.lastIndexOf('</script>');
+  assert.ok(open > 0 && close > open, 'no script block found in the page');
+  const js = html.slice(open + '<script>'.length, close);
+
+  // new Function parses without executing, so no DOM is needed.
+  assert.doesNotThrow(() => new Function(js), 'the page script does not parse');
+});
+
+test('the page has no stray backticks in it', () => {
+  // page.ts is a template literal: an unescaped backtick anywhere ends the string early
+  // and produces a compile error that points at a line hundreds away from the cause.
+  const html = renderPage('test-token');
+  assert.ok(html.length > 10_000, 'the page rendered suspiciously short');
+  assert.ok(!html.includes('${'), 'an unexpanded template placeholder reached the page');
 });

@@ -135,6 +135,14 @@ table.grid td{padding:9px 0;border-top:1px solid var(--line)}
 @media (max-width:820px){
   aside{width:64px!important;padding:14px 8px 10px!important}
   aside .navlabel,aside .sidefoot,aside .brandtext{display:none}
+  /* The wordmark is wider than the collapsed rail and was rendering clipped as "KLA".
+     Show the square mark instead — it is the same brand at a size that fits. */
+  aside .lg-l,aside .lg-d{display:none!important}
+  aside .mark{display:block!important;height:22px;width:22px;border-radius:6px}
+  /* There is one favicon and it is a dark mark on transparency, so on the dark rail it
+     vanished. A light chip behind it reads in both themes without inventing a second
+     asset or inverting the brand colours. */
+  [data-theme="dark"] aside .mark{background:var(--ink);padding:3px;box-sizing:content-box}
   aside nav button{justify-content:center;padding:10px 0!important}
   main > header{padding:14px 16px 12px!important}
   #view{padding:16px!important}
@@ -149,7 +157,6 @@ table.grid td{padding:9px 0;border-top:1px solid var(--line)}
 <div id="root" data-theme="light" style="height:100vh;display:flex;flex-direction:column;background:var(--canvas);color:var(--ink);font-size:14px;overflow:hidden">
 
   <div style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:9px;padding:8px 14px;background:var(--surface-2);border-bottom:1px solid var(--line)">
-    <span class="eyebrow" style="color:var(--ink-3)">Klair Hats</span>
     <div role="radiogroup" aria-label="Execution profile" id="profile-group" style="display:flex;gap:3px;background:var(--canvas);border-radius:999px;padding:3px"></div>
     <span class="xs" id="profile-note" style="margin-left:auto;color:var(--ink-3)"></span>
     <button class="gh" id="theme-toggle" style="border:1px solid var(--line);background:var(--canvas);color:var(--ink-2);font-family:inherit;font-size:12.5px;font-weight:600;padding:8px 14px;border-radius:999px;cursor:pointer;min-height:36px">Dark</button>
@@ -161,6 +168,7 @@ table.grid td{padding:9px 0;border-top:1px solid var(--line)}
       <div style="display:flex;align-items:center;gap:9px;flex:none;padding:0 6px 2px">
         <img class="lg-l" src="/brand/klair-logo-dark.png" alt="Klair" style="height:26px;width:auto">
         <img class="lg-d" src="/brand/klair-logo-white.png" alt="" aria-hidden="true" style="height:26px;width:auto">
+        <img class="mark" src="/brand/favicon-32.png" alt="Klair" style="display:none">
         <span class="h3 brandtext" style="color:var(--ink-3);font-weight:500">Hats</span>
       </div>
       <p class="xs brandtext" style="margin:2px 0 16px;padding:0 6px;color:var(--ink-3)">One agent, many hats</p>
@@ -1746,7 +1754,7 @@ async function loadSpace() {
 
   const doDelete = async (entry, workspace) => {
     const lead = entry.reversibility === 'permanent' ? 'This cannot be undone.' : '';
-    if (!(await ask('Delete ' + entry.label.toLowerCase() + '?', fmtBytes(entry.bytes) + ' — ' + lead + '\n\n' + entry.cost, 'Delete', true))) return;
+    if (!(await ask('Delete ' + entry.label.toLowerCase() + '?', fmtBytes(entry.bytes) + ' — ' + lead + '\\n\\n' + entry.cost, 'Delete', true))) return;
     const r = await post('/api/space/prune', Object.assign({ target: entry.key }, workspace ? { workspace } : {}));
     await say('Freed ' + fmtBytes(r.bytesFreed), r.itemsRemoved + ' files removed.');
     loadSpace();
