@@ -461,13 +461,40 @@ export async function startUi(
       }
 
       case 'POST /api/answer': {
-        const body = (await readBody(req)) as { runId?: string; id?: string; answer?: string };
+        const body = (await readBody(req)) as {
+          runId?: string;
+          id?: string;
+          answer?: string;
+          values?: Record<string, string>;
+        };
         const live = runs.get(body.runId ?? '');
         if (!live?.pending || live.pending.id !== body.id) {
           return json(res, 409, { error: 'STALE', message: 'that prompt is no longer open' });
         }
         const pending = live.pending;
         live.pending = undefined as unknown as PendingAsk;
+
+        // A form answer. Secret fields are diverted into credentials.json here, at the
+        // boundary — before the value can reach the transcript, an artifact, or the next
+        // prompt. The model gets the last four characters and the name it is stored under,
+        // which is enough to reason about and useless to leak.
+        if (body.values && pending.kind === 'clarification') {
+          const fields = (pending.payload as ClarificationRequest).fields ?? [];
+          const parts: string[] = [];
+          for (const field of fields) {
+            const raw = String(body.values[field.name] ?? '').trim();
+            if (!raw) continue;
+            if (field.type === 'secret') {
+              await setCredential(field.name, raw);
+              parts.push(`${field.name}: stored securely (${credentialHint(raw)})`);
+            } else {
+              parts.push(`${field.name}: ${raw}`);
+            }
+          }
+          pending.resolve(parts.length ? parts.join('\n') : '(nothing filled in)');
+          return json(res, 200, { ok: true });
+        }
+
         pending.resolve(String(body.answer ?? ''));
         return json(res, 200, { ok: true });
       }

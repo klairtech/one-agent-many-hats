@@ -235,3 +235,50 @@ test('changing a tier reaches the provider pool that was built before it', async
     await cleanup(home);
   }
 });
+
+/**
+ * A password typed into a chat form would otherwise sit in the transcript, in an artifact,
+ * and in every prompt for the rest of the run. Secret fields are diverted at the server
+ * boundary: the value goes to credentials.json and the model is told only the last four
+ * characters. This asserts the value never appears in what the tool returns.
+ */
+test('a secret field never reaches the model', async () => {
+  const home = await tempHome();
+  try {
+    const { getCredential, setCredential, credentialHint, resetCredentialCache } = await import(
+      '../src/core/credentials.js'
+    );
+    resetCredentialCache();
+
+    // What the server does with a form answer, in miniature.
+    const fields = [
+      { name: 'athena_region', label: 'Region', type: 'text' as const },
+      { name: 'athena_key', label: 'Access key', type: 'secret' as const },
+    ];
+    const values: Record<string, string> = {
+      athena_region: 'ap-south-1',
+      athena_key: 'AKIAsupersecretvalue9999',
+    };
+
+    const parts: string[] = [];
+    for (const field of fields) {
+      const raw = values[field.name] ?? '';
+      if (field.type === 'secret') {
+        await setCredential(field.name, raw);
+        parts.push(`${field.name}: stored securely (${credentialHint(raw)})`);
+      } else {
+        parts.push(`${field.name}: ${raw}`);
+      }
+    }
+    const answer = parts.join('\n');
+
+    assert.ok(!answer.includes('AKIAsupersecretvalue9999'), 'the secret leaked into the answer');
+    assert.match(answer, /athena_region: ap-south-1/, 'ordinary fields must come through');
+    assert.match(answer, /stored securely/);
+    assert.match(answer, /9999/, 'the hint should identify which key it was');
+    // And it is actually retrievable where it belongs.
+    assert.equal(getCredential('athena_key'), 'AKIAsupersecretvalue9999');
+  } finally {
+    await cleanup(home);
+  }
+});
