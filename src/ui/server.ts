@@ -18,7 +18,7 @@ import fsp from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 
-import { apiKeyEnvName, resolveApiKeyWithSource, saveConfig, type Profile, type Tier } from '../core/config.js';
+import { apiKeyEnvName, loadConfig, resolveApiKeyWithSource, saveConfig, type Profile, type Tier } from '../core/config.js';
 import { clearCredential, credentialHint, credentialsPath, getCredential, setCredential } from '../core/credentials.js';
 import { toHatsError } from '../core/errors.js';
 import { PathGuard, hatsHome, packageRoot, workspaceDir } from '../core/paths.js';
@@ -39,6 +39,21 @@ import { renderMarkdown } from './markdown.js';
 import { CATALOGUE, OllamaAdmin, SUGGESTED, catalogueWithSizes, searchHuggingFace } from './models.js';
 import { renderPage } from './page.js';
 import { catalogue, quote } from './pricing.js';
+
+/**
+ * Settings this panel session owns and should keep across a re-read: the ones a flag set
+ * for this invocation only. Everything else comes from disk, so a change made elsewhere
+ * wins over whatever this process happened to load at startup.
+ */
+function pickLocalOverrides(
+  current: import('../core/config.js').HatsConfig,
+  onDisk: import('../core/config.js').HatsConfig,
+): Partial<import('../core/config.js').HatsConfig> {
+  const out: Partial<import('../core/config.js').HatsConfig> = {};
+  // --network on the command line must not be undone by a stale file.
+  if (current.network.enabled && !onDisk.network.enabled) out.network = current.network;
+  return out;
+}
 
 /** The only files /brand/ will ever serve. A fixed list, not a path lookup. */
 const BRAND_FILES = [
@@ -162,6 +177,14 @@ export async function startUi(
           profile?: string;
           network?: boolean;
         };
+        // Re-read from disk before merging. The panel holds config in memory from
+        // startup, so saving after any CLI change (hats config set, another panel) wrote
+        // the stale copy back and silently reverted it — the frontier tier went back to
+        // haiku hours after being pointed at sonnet, with nothing to show why.
+        // [Seen in a live run, 2026-08-15.]
+        const onDisk = await loadConfig();
+        session.config = { ...onDisk, ...pickLocalOverrides(session.config, onDisk) };
+
         if (body.provider) session.config.defaultProvider = body.provider;
         if (body.tiers) session.config.tiers = { ...session.config.tiers, ...body.tiers };
         if (body.profile === 'read-only' || body.profile === 'assisted' || body.profile === 'trusted') {
