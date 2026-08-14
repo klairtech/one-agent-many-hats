@@ -40,6 +40,7 @@ import {
   type Stage,
 } from './compose.js';
 import { renderGateDisclosure, renderGateFeedback, runVerificationGates, type GateFinding } from './gates.js';
+import { stalled } from './vigilance.js';
 
 const DISCOVERY_TOOLS = new Set(['list_dir', 'read_file', 'search_files', 'recall_memory']);
 const MAX_GATE_RECOVERIES = 1;
@@ -204,6 +205,8 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
   let planned = false;
   let recoveries = 0;
   let emptyTurns = 0;
+  /** Said once. A nudge repeated every step is noise the model learns to skip. */
+  let stallWarned = false;
   let protocolDowngraded = false;
   let reviewVerdict: { role: string; verdict: string; detail: string } | undefined;
   /** The exact text handed to the reviewer, so a PASS delivers it verbatim. */
@@ -341,6 +344,16 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
         ...(response.toolCalls.length > 0 ? { toolCalls: response.toolCalls } : {}),
       });
 
+      // A run that is going in circles cannot tell. One run revised its approach at step
+      // 140 of 151; the signs were there from about step 20. The loop notices on the
+      // model's behalf and says so once, rather than letting it grind to the budget.
+      const circling = stalled(observations);
+      if (circling.stalled && !stallWarned) {
+        stallWarned = true;
+        emit({ type: 'note', message: `not making progress — ${circling.reason.split('.')[0]}` });
+        await record({ role: 'user', content: `Stop and reconsider: ${circling.reason}` });
+      }
+
       // --- acting ---
       if (response.toolCalls.length > 0) {
         const limit = opts.config.limits.maxToolCallsPerStep;
@@ -439,6 +452,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
           reviewRequired: outcome.review,
           reviewVerdict,
           usedTools: observations.length > 0,
+          observations,
         });
         const outcomeOfGates = await settle(prior, gateFindings, recoveries, record, emit, logger);
         if (outcomeOfGates.retry) {
@@ -464,6 +478,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
         reviewRequired: outcome.review,
         ...(reviewVerdict ? { reviewVerdict } : {}),
         usedTools: observations.length > 0,
+        observations,
       });
 
       const needsReview = outcome.review !== 'none' && !reviewVerdict && !awaitingReview;

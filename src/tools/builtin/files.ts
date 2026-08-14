@@ -8,6 +8,7 @@ import path from 'node:path';
 
 import { HatsError } from '../../core/errors.js';
 import type { ToolContext, ToolHandler, ToolResult } from '../types.js';
+import { nearMiss } from '../../engine/vigilance.js';
 
 /** Directories that are never worth a step. Overridable per call, deliberately not by default. */
 const SKIP_DIRS = new Set([
@@ -249,12 +250,48 @@ export const writeFile: ToolHandler = {
       .stat(file)
       .then(() => true)
       .catch(() => false);
-    await fsp.mkdir(path.dirname(file), { recursive: true });
+
+    // The most common fatal error in unattended work is a single wrong character in a
+    // path. The write succeeds, the tool says "written", and everything downstream refers
+    // to a file nobody will ever find. The one clue available here is that a near-identical
+    // name already sits next to it.
+    const dir = path.dirname(file);
+    const siblings = existed ? [] : await fsp.readdir(dir).catch(() => [] as string[]);
+    const suspect = existed ? null : nearMiss(file, siblings);
+
+    // A brand-new directory for a single file is the other shape this takes: the folder was
+    // misspelt, so nothing was there to compare against.
+    const dirExisted = await fsp
+      .stat(dir)
+      .then(() => true)
+      .catch(() => false);
+
+    await fsp.mkdir(dir, { recursive: true });
     await fsp.writeFile(file, content, 'utf8');
     const rel = path.relative(ctx.workspaceRoot, file);
+
+    const warnings: string[] = [];
+    if (suspect) {
+      warnings.push(
+        `"${path.basename(file)}" is one character from "${suspect}", which already exists here. ` +
+          `If you meant that file, this write went somewhere nobody will look.`,
+      );
+    }
+    if (!dirExisted) {
+      warnings.push(
+        `the directory "${path.relative(ctx.workspaceRoot, dir)}" did not exist and was created. ` +
+          `If you expected it to exist, the path is wrong.`,
+      );
+    }
+    if (warnings.length) {
+      ctx.logger.warn('write.suspicious-path', { path: rel, warnings });
+    }
+
     return {
-      summary: `${existed ? 'overwrote' : 'created'} ${rel} (${content.length} bytes)`,
-      payload: { path: rel, bytes: content.length, existed },
+      summary:
+        `${existed ? 'overwrote' : 'created'} ${rel} (${content.length} bytes)` +
+        (warnings.length ? `\n  check this: ${warnings.join(' ')}` : ''),
+      payload: { path: rel, bytes: content.length, existed, ...(warnings.length ? { warnings } : {}) },
       provenance: { path: file, existed },
     };
   },
