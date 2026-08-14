@@ -6,13 +6,13 @@
  * answer as an ordinary observation and the loop continues with full history.
  */
 
-import type { ToolHandler, ToolResult } from '../types.js';
+import type { AskField, ClarificationRequest, ToolHandler, ToolResult } from '../types.js';
 
 export const askUser: ToolHandler = {
   spec: {
     name: 'ask_user',
     description:
-      'Pause and ask the human a question, optionally with a short list of options. Use it when two readings of the request would lead to materially different work, or when scope is missing. Do not use it for facts you could establish with a tool call.',
+      'Pause and ask the human a question. Use options for a simple choice, or fields to collect several values at once — the panel renders them as a form in the conversation. Use it when two readings of the request would lead to materially different work, or when you need details only they have (a hostname, an account id, a key). Do not use it for facts you could establish with a tool call.',
     parameters: {
       type: 'object',
       properties: {
@@ -21,6 +21,26 @@ export const askUser: ToolHandler = {
           type: 'array',
           description: 'Two to four concrete choices, if the question is a choice.',
           items: { type: 'string' },
+        },
+        fields: {
+          type: 'array',
+          description:
+            'Ask for several values at once as a form. Each field: name, label, type (text, number, select, secret, boolean), and options for a select. Use type "secret" for anything sensitive — its value is stored securely and you receive only a masked hint, never the value itself.',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'Key you will receive the answer under.' },
+              label: { type: 'string', description: 'What to show above the input.' },
+              type: {
+                type: 'string',
+                enum: ['text', 'number', 'select', 'secret', 'boolean'],
+              },
+              options: { type: 'array', items: { type: 'string' } },
+              placeholder: { type: 'string' },
+              required: { type: 'boolean' },
+            },
+            required: ['name', 'label', 'type'],
+          },
         },
       },
       required: ['question'],
@@ -33,11 +53,17 @@ export const askUser: ToolHandler = {
   async run(args, ctx): Promise<ToolResult> {
     const question = String(args['question']);
     const options = Array.isArray(args['options']) ? (args['options'] as string[]).map(String) : [];
-    const request = options.length > 0 ? { question, options } : { question };
+    const fields = normaliseFields(args['fields']);
+
+    const request: ClarificationRequest = {
+      question,
+      ...(options.length > 0 ? { options } : {}),
+      ...(fields.length > 0 ? { fields } : {}),
+    };
     const answer = await ctx.ask(request);
     return {
       summary: `The human answered: ${answer}`,
-      payload: { question, options, answer },
+      payload: { question, options, fields: fields.map((f) => ({ ...f, value: undefined })), answer },
       provenance: { question },
     };
   },
@@ -82,5 +108,33 @@ export const recallMemory: ToolHandler = {
     };
   },
 };
+
+/**
+ * Field definitions come from the model, so they are rebuilt here rather than trusted.
+ * A malformed one is dropped instead of failing the call — the form is a convenience and
+ * losing a field is better than losing the question.
+ */
+function normaliseFields(raw: unknown): AskField[] {
+  if (!Array.isArray(raw)) return [];
+  const out: AskField[] = [];
+  for (const item of raw.slice(0, 12)) {
+    if (!item || typeof item !== 'object') continue;
+    const f = item as Record<string, unknown>;
+    const name = String(f['name'] ?? '').trim();
+    const label = String(f['label'] ?? '').trim();
+    const type = String(f['type'] ?? 'text');
+    if (!name || !label) continue;
+    if (!['text', 'number', 'select', 'secret', 'boolean'].includes(type)) continue;
+    out.push({
+      name,
+      label,
+      type: type as AskField['type'],
+      ...(Array.isArray(f['options']) ? { options: (f['options'] as unknown[]).map(String).slice(0, 12) } : {}),
+      ...(f['placeholder'] ? { placeholder: String(f['placeholder']) } : {}),
+      ...(f['required'] ? { required: true } : {}),
+    });
+  }
+  return out;
+}
 
 export const interactTools: ToolHandler[] = [askUser, recallMemory];

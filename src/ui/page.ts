@@ -814,6 +814,74 @@ function renderAsk(runId, ask, body) {
     no.onclick = async () => { box.remove(); await post('/api/answer', { runId, id: ask.id, answer: 'no' }); };
     row.appendChild(yes); row.appendChild(no);
     box.appendChild(row);
+  } else if ((ask.fields || []).length) {
+    // A form, inline in the conversation. Asking for six things one round trip at a time
+    // is the difference between a setup that takes a minute and one nobody finishes.
+    box.appendChild(st(el('p', 'h3', ask.question || 'A few details'), 'margin:0'));
+    const form = st(el('div'), 'display:flex;flex-direction:column;gap:10px;margin-top:12px');
+    const inputs = {};
+
+    ask.fields.forEach((f) => {
+      const cell = st(el('div'), 'display:flex;flex-direction:column;gap:4px');
+      const label = st(el('span', 'xs'), 'color:var(--ink-2)');
+      label.textContent = f.label + (f.required ? ' *' : '');
+      cell.appendChild(label);
+
+      let input;
+      if (f.type === 'select') {
+        input = el('select', 'fld');
+        (f.options || []).forEach((o) => {
+          const opt = el('option', '', o);
+          opt.value = o;
+          input.appendChild(opt);
+        });
+      } else if (f.type === 'boolean') {
+        input = el('select', 'fld');
+        ['yes', 'no'].forEach((o) => {
+          const opt = el('option', '', o);
+          opt.value = o;
+          input.appendChild(opt);
+        });
+      } else {
+        input = el('input', 'fld');
+        if (f.type === 'secret') input.type = 'password';
+        if (f.type === 'number') input.type = 'number';
+        if (f.placeholder) input.placeholder = f.placeholder;
+      }
+      st(input, 'min-height:38px;padding:9px 12px');
+      inputs[f.name] = input;
+      cell.appendChild(input);
+
+      if (f.type === 'secret') {
+        // Said at the point of entry, because trusting a chat box with a key is a
+        // reasonable thing to hesitate over.
+        cell.appendChild(st(el('span', 'xs'), 'color:var(--ink-3)')).textContent =
+          'Stored in credentials.json at mode 0600. The agent is told only the last four characters, never the value.';
+      }
+      form.appendChild(cell);
+    });
+    box.appendChild(form);
+
+    const msg = st(el('p', 'xs'), 'margin:8px 0 0;color:var(--dang)');
+    const actions = st(el('div'), 'display:flex;gap:8px;margin-top:11px');
+    const submit = el('button', 'btn1 btnsm', 'Send');
+    submit.onclick = async () => {
+      const values = {};
+      const missing = [];
+      ask.fields.forEach((f) => {
+        const val = (inputs[f.name].value || '').trim();
+        if (f.required && !val) missing.push(f.label);
+        values[f.name] = val;
+      });
+      if (missing.length) { msg.textContent = 'Still needed: ' + missing.join(', '); return; }
+      box.remove();
+      await post('/api/answer', { runId, id: ask.id, values });
+    };
+    const skip = el('button', 'btn3 btnsm', 'Skip');
+    skip.onclick = async () => { box.remove(); await post('/api/answer', { runId, id: ask.id, answer: 'The human skipped this form.' }); };
+    actions.appendChild(submit); actions.appendChild(skip);
+    box.appendChild(actions);
+    box.appendChild(msg);
   } else {
     box.appendChild(st(el('p', 'h3', ask.question || 'A question'), 'margin:0'));
     const row = st(el('div'), 'display:flex;flex-wrap:wrap;gap:8px;margin-top:11px');
@@ -825,9 +893,9 @@ function renderAsk(runId, ask, body) {
     const free = el('input', 'fld');
     free.placeholder = 'or answer in your own words';
     st(free, 'flex:1;min-width:220px;min-height:36px;padding:8px 12px');
-    const go2 = el('button', 'btn1 btnsm', 'Answer');
-    go2.onclick = async () => { box.remove(); await post('/api/answer', { runId, id: ask.id, answer: free.value }); };
-    row.appendChild(free); row.appendChild(go2);
+    const send = el('button', 'btn1 btnsm', 'Answer');
+    send.onclick = async () => { box.remove(); await post('/api/answer', { runId, id: ask.id, answer: free.value }); };
+    row.appendChild(free); row.appendChild(send);
     box.appendChild(row);
   }
   body.appendChild(box);

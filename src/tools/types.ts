@@ -46,9 +46,28 @@ export interface ApprovalRequest {
   scope?: Record<string, unknown>;
 }
 
+/** One input in an inline form. */
+export interface AskField {
+  name: string;
+  label: string;
+  /**
+   * `secret` never reaches the model. The value is written to credentials.json under the
+   * field's name and the answer carries only a hint — a password typed into a chat form
+   * would otherwise sit in the transcript, in an artifact, and in every subsequent prompt
+   * for the rest of the run.
+   */
+  type: 'text' | 'number' | 'select' | 'secret' | 'boolean';
+  options?: string[];
+  placeholder?: string;
+  required?: boolean;
+  value?: string;
+}
+
 export interface ClarificationRequest {
   question: string;
   options?: string[];
+  /** When present, the surface renders a form rather than a free-text prompt. */
+  fields?: AskField[];
 }
 
 /** Retrieval surface the tools may use. Implemented by src/memory. */
