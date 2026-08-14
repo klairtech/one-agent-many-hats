@@ -1,10 +1,14 @@
 ---
 id: cross/file-etiquette
 kind: cross-cutting
-version: 1
+version: 2
 description: How to read and touch a workspace without wasting steps or breaking things.
 tools: []
 stages: [discover, act]
+# Not research: this is guidance for reading a workspace, and attaching it to the discover
+# stage of a web-research run sent the agent to list_dir on a question about an external
+# organisation. [Seen in a live run, 2026-08-15.]
+outcomes: [outcome/answer, outcome/investigate, outcome/change]
 review: none
 ---
 

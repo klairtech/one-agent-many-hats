@@ -1,7 +1,7 @@
 ---
 id: outcome/research
 kind: outcome
-version: 4
+version: 5
 description: Answer a question that needs sources from the web, with every claim traced to a URL.
 tools:
   - fetch_url
@@ -40,6 +40,19 @@ tier: frontier
 ---
 
 # Research
+
+**The answer is not in the workspace.** You were routed here because the question is about
+something outside this machine — an organisation, a product, a person, a current fact. Start
+with `fetch_url` or `browser_open`. Do not open the workspace unless the request names a
+local file, and do not run `list_dir` or `search_files` to "check first": the subject is not
+there, and a run that greps the disk for a charity's name has wasted two steps proving
+nothing. [Seen in a live run: a request to research an organisation searched 166 local files
+and then asked the user for a URL.]
+
+**Find the URL yourself before asking for one.** If you do not know the address, search for
+it. Asking the person for a website is the answer of last resort, not the opening move — they
+came here so they would not have to look it up. Only ask when the name is genuinely ambiguous
+between real candidates, and then say which candidates you found.
 
 This skill requires network egress to be enabled. If `fetch_url` is not in your tool list,
 egress is off: say so plainly, answer from what you already have, and name what you would
