@@ -594,11 +594,17 @@ async function launchChrome(ctx: ToolContext): Promise<void> {
   // would hand the agent every logged-in session they have. This one starts empty.
   const profile = path.join(tmpdir(), 'hats-browser-profile');
   ctx.logger.warn('browser.launch', { bin, port: PORT, profile });
+  // Headless unless the user asked to watch. A window stealing focus every time the agent
+  // looks something up makes background work unusable; `--headless=new` renders the same
+  // pages over the same protocol, it simply does not appear.
+  const headful = ctx.config.browser?.headful === true;
   const child = spawn(
     bin,
     [
       `--remote-debugging-port=${PORT}`,
       `--user-data-dir=${profile}`,
+      ...(headful ? [] : ['--headless=new', '--disable-gpu']),
+      '--window-size=1280,900',
       '--no-first-run',
       '--no-default-browser-check',
       'about:blank',
@@ -606,6 +612,52 @@ async function launchChrome(ctx: ToolContext): Promise<void> {
     { detached: true, stdio: 'ignore' },
   );
   child.unref();
+}
+
+/**
+ * Opens a page in the shared browser and returns what it rendered. Used by `web_search`,
+ * which needs a real Chrome rather than `fetch_url`: search engines serve a redirect or a
+ * CAPTCHA to anything that does not look like a browser, and a browser is the one thing
+ * that does.
+ */
+export async function renderPageText(
+  ctx: ToolContext,
+  url: string,
+  settleMs = 2_500,
+): Promise<{ url: string; title: string; text: string; html: string }> {
+  const cdp = await ensureSession(ctx);
+  await cdp.send('Page.navigate', { url });
+  await cdp.settleUntilReady(settleMs);
+  const [title, finalUrl, text, html] = await Promise.all([
+    cdp.evaluate<string>('document.title').catch(() => ''),
+    cdp.evaluate<string>('location.href').catch(() => url),
+    cdp.pageText().catch(() => ''),
+    cdp.evaluate<string>('document.documentElement.outerHTML.slice(0, 400000)').catch(() => ''),
+  ]);
+  return { url: finalUrl, title, text, html };
+}
+
+/** Extracts result rows from whatever search page is currently open. */
+export async function scrapeResults(
+  ctx: ToolContext,
+  selectors: { row: string; title: string; link: string; snippet: string },
+): Promise<Array<{ title: string; url: string; snippet: string }>> {
+  const cdp = await ensureSession(ctx);
+  const script = `(()=>{
+    const out=[];
+    document.querySelectorAll(${JSON.stringify(selectors.row)}).forEach((row)=>{
+      const a=row.querySelector(${JSON.stringify(selectors.link)});
+      const t=row.querySelector(${JSON.stringify(selectors.title)});
+      const s=row.querySelector(${JSON.stringify(selectors.snippet)});
+      const href=a&&a.href;
+      if(!href||href.startsWith('javascript')) return;
+      const title=((t&&t.innerText)||(a&&a.innerText)||'').trim();
+      if(!title) return;
+      out.push({title:title.slice(0,200),url:href,snippet:((s&&s.innerText)||'').trim().slice(0,300)});
+    });
+    return out.slice(0,25);
+  })()`;
+  return cdp.evaluate<Array<{ title: string; url: string; snippet: string }>>(script).catch(() => []);
 }
 
 export const browserTools: ToolHandler[] = [browserOpen, browserRead, browserAct, browserShot];

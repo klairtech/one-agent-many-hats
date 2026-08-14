@@ -110,6 +110,11 @@ export interface HatsConfig {
     fromName?: string;
     allowRecipients: string[];
   };
+  /**
+   * The built-in browser. Headless by default so a window does not appear and take focus
+   * on every lookup; set `headful` to watch what it is doing.
+   */
+  browser?: { headful?: boolean };
   /** ADR-0006: how much of self-extension promotes without a human. */
   autonomy: Autonomy;
 }
@@ -198,6 +203,7 @@ function mergeConfig(base: HatsConfig, over: Partial<HatsConfig>): HatsConfig {
     rag: { ...base.rag, ...(over.rag ?? {}) },
     mcpServers: { ...(base.mcpServers ?? {}), ...(over.mcpServers ?? {}) },
     channels: { ...(base.channels ?? {}), ...(over.channels ?? {}) },
+    ...(over.browser ?? base.browser ? { browser: over.browser ?? base.browser } : {}),
     ...(over.remote ?? base.remote ? { remote: over.remote ?? base.remote } : {}),
     ...(over.email ?? base.email ? { email: over.email ?? base.email } : {}),
     autonomy: { ...base.autonomy, ...(over.autonomy ?? {}) },

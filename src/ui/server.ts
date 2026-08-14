@@ -781,6 +781,106 @@ export async function startUi(
         return json(res, 200, { ok: true, restartRequired: true });
       }
 
+      case 'GET /api/integrations': {
+        // Everything a tool needs configured before it can do anything, in one place.
+        return json(res, 200, {
+          search: {
+            providers: ['brave', 'tavily', 'serper'].map((p) => ({
+              id: p,
+              hint: credentialHint(getCredential(`search:${p}`)),
+            })),
+          },
+          remote: Object.entries(session.config.remote?.hosts ?? {}).map(([alias, h]) => ({
+            alias,
+            hostname: h.hostname,
+            user: h.user ?? '',
+            port: h.port ?? 22,
+            identityFile: h.identityFile ?? '',
+          })),
+          email: {
+            host: session.config.email?.host ?? '',
+            port: session.config.email?.port ?? 587,
+            user: session.config.email?.user ?? '',
+            from: session.config.email?.from ?? '',
+            fromName: session.config.email?.fromName ?? '',
+            allowRecipients: session.config.email?.allowRecipients ?? [],
+            passwordHint: credentialHint(getCredential('email')),
+          },
+          browser: { headful: session.config.browser?.headful === true },
+        });
+      }
+
+      case 'POST /api/integrations': {
+        const body = (await readBody(req)) as {
+          kind?: string;
+          secret?: string;
+          provider?: string;
+          host?: Record<string, string | number>;
+          alias?: string;
+          email?: Record<string, unknown>;
+          headful?: boolean;
+        };
+
+        if (body.kind === 'search-key') {
+          if (!['brave', 'tavily', 'serper'].includes(body.provider ?? '')) {
+            return json(res, 400, { error: 'unknown search provider' });
+          }
+          if (body.secret) await setCredential(`search:${body.provider}`, body.secret.trim());
+          else await clearCredential(`search:${body.provider}`);
+          return json(res, 200, { ok: true });
+        }
+
+        if (body.kind === 'remote-host') {
+          const alias = (body.alias ?? '').trim();
+          if (!/^[\w.-]{1,40}$/.test(alias)) return json(res, 400, { error: 'bad host alias' });
+          const hosts = { ...(session.config.remote?.hosts ?? {}) };
+          if (body.host === null || body.host === undefined) delete hosts[alias];
+          else {
+            const hostname = String(body.host['hostname'] ?? '').trim();
+            if (!hostname) return json(res, 400, { error: 'a hostname is required' });
+            hosts[alias] = {
+              hostname,
+              ...(body.host['user'] ? { user: String(body.host['user']) } : {}),
+              ...(body.host['port'] ? { port: Number(body.host['port']) } : {}),
+              ...(body.host['identityFile'] ? { identityFile: String(body.host['identityFile']) } : {}),
+            };
+          }
+          session.config.remote = { hosts };
+          await saveConfig(session.config);
+          return json(res, 200, { ok: true });
+        }
+
+        if (body.kind === 'email') {
+          const e = body.email ?? {};
+          const recipients = String(e['allowRecipients'] ?? '')
+            .split(/[\s,;]+/)
+            .map((x) => x.trim())
+            .filter(Boolean);
+          // No wildcard: choosing who the agent may write to is the user's decision.
+          if (recipients.some((r) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(r))) {
+            return json(res, 400, { error: 'one of those is not an email address' });
+          }
+          if (body.secret) await setCredential('email', body.secret.trim());
+          session.config.email = {
+            host: String(e['host'] ?? '').trim(),
+            port: Number(e['port'] ?? 587),
+            ...(e['user'] ? { user: String(e['user']) } : {}),
+            from: String(e['from'] ?? '').trim(),
+            ...(e['fromName'] ? { fromName: String(e['fromName']) } : {}),
+            allowRecipients: recipients,
+          };
+          await saveConfig(session.config);
+          return json(res, 200, { ok: true });
+        }
+
+        if (body.kind === 'browser') {
+          session.config.browser = { headful: body.headful === true };
+          await saveConfig(session.config);
+          return json(res, 200, { ok: true });
+        }
+        return json(res, 400, { error: `unknown integration "${body.kind}"` });
+      }
+
       case 'POST /api/telegram': {
         const body = (await readBody(req)) as {
           action?: string;

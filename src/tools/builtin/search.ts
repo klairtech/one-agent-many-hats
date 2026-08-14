@@ -15,7 +15,8 @@
 import { HatsError } from '../../core/errors.js';
 import { getCredential } from '../../core/credentials.js';
 import { requestJson } from '../../providers/http.js';
-import type { ToolHandler, ToolResult } from '../types.js';
+import { renderPageText, scrapeResults } from './browser.js';
+import type { ToolContext, ToolHandler, ToolResult } from '../types.js';
 
 export interface SearchHit {
   title: string;
@@ -78,34 +79,211 @@ export const webSearch: ToolHandler = {
     if (!query) throw new HatsError('TOOL_INPUT_INVALID', 'web_search needs a query', {});
     const limit = Math.min(Math.max(Number(args['limit'] ?? 8), 1), 20);
 
+    // 1. A search API, if one is configured. Cheapest, most reliable, no blocking.
     const configured = PROVIDERS.find((p) => getCredential(`search:${p}`));
-    if (!configured) {
-      // A clear dead end beats a plausible wrong answer. The model should report this
-      // rather than try to scrape its way around it.
-      throw new HatsError('CONFIG_MISSING', SETUP, { providers: [...PROVIDERS] });
+    if (configured) {
+      const key = getCredential(`search:${configured}`) as string;
+      const hits = await run(configured, key, query, limit, ctx.signal).catch(() => []);
+      if (hits.length > 0) return present(query, configured, hits, 'api');
+      ctx.logger.warn('search.api.empty', { provider: configured, query });
     }
 
-    const key = getCredential(`search:${configured}`) as string;
-    const hits = await run(configured, key, query, limit, ctx.signal);
-    if (hits.length === 0) {
-      return {
-        summary: `No results for "${query}" from ${configured}.`,
-        payload: { query, provider: configured, hits: [] },
-        failed: true,
-      };
-    }
+    // 2. Plain HTTP with browser-like headers. Most of what makes an engine refuse is the
+    // missing User-Agent and Accept headers rather than anything clever, and the
+    // lightweight endpoints (Mojeek, DuckDuckGo's HTML view) serve real results to a
+    // request that looks ordinary. No browser process, nothing on screen, milliseconds.
+    const viaHttp = await searchOverHttp(ctx, query, limit);
+    if (viaHttp.hits.length > 0) return present(query, viaHttp.engine, viaHttp.hits, 'http');
 
-    return {
-      summary:
-        `${hits.length} result(s) for "${query}" via ${configured}:\n\n` +
-        hits
-          .map((h, i) => `${i + 1}. ${h.title}\n   ${h.url}\n   ${h.snippet}`)
-          .join('\n\n'),
-      payload: { query, provider: configured, hits },
-      provenance: { provider: configured, query },
-    };
+    // 3. A real browser, headless, only when the cheap route failed. Some engines render
+    // results with JavaScript and there is no HTML to parse without one.
+    const viaBrowser = await searchInBrowser(ctx, query, limit);
+    if (viaBrowser.hits.length > 0) return present(query, viaBrowser.engine, viaBrowser.hits, 'browser');
+
+    // 3. Nothing worked. Say which routes were tried, so this is diagnosable rather than
+    // a shrug — and so the model does not invent results to fill the gap.
+    throw new HatsError(
+      'TOOL_FAILED',
+      `No results for "${query}".\n\nTried: ` +
+        (configured ? `the ${configured} API, then ` : '') +
+        `${viaHttp.tried.join(', ')} over plain HTTP, then ` +
+        `${viaBrowser.tried.join(', ')} in a headless browser. ` +
+        (viaBrowser.blocked.length
+          ? `Blocked by: ${viaBrowser.blocked.join(', ')}. `
+          : '') +
+        (configured ? '' : `\n\n${SETUP}`),
+      { query, tried: viaBrowser.tried, blocked: viaBrowser.blocked },
+    );
   },
 };
+
+/**
+ * Which route produced the results is part of the result. An API answer and a scraped one
+ * deserve different confidence, and saying "scraped in a browser" when it was a plain fetch
+ * is the kind of small lie that makes provenance worthless.
+ */
+function present(query: string, via: string, hits: SearchHit[], how: 'api' | 'http' | 'browser'): ToolResult {
+  const note = { api: '', http: ' (fetched directly)', browser: ' (rendered in a headless browser)' }[how];
+  return {
+    summary:
+      `${hits.length} result(s) for "${query}" via ${via}${note}:\n\n` +
+      hits.map((h, i) => `${i + 1}. ${h.title}\n   ${h.url}\n   ${h.snippet}`).join('\n\n'),
+    payload: { query, provider: via, method: how, hits },
+    provenance: { provider: via, query, method: how },
+  };
+}
+
+/**
+ * Engines, in the order they tolerate being driven. Each names where its result rows live.
+ *
+ * Mojeek and Startpage first because they are independent indexes that do not fight
+ * automation; DuckDuckGo's lite HTML endpoint next; Bing and Google last, because they are
+ * the most likely to interrupt with a challenge and the least useful when they do.
+ */
+const ENGINES: Array<{
+  name: string;
+  url: (q: string) => string;
+  sel: { row: string; title: string; link: string; snippet: string };
+}> = [
+  {
+    name: 'mojeek',
+    url: (q) => `https://www.mojeek.com/search?q=${encodeURIComponent(q)}`,
+    sel: { row: 'ul.results-standard li', title: 'a.title', link: 'a.title', snippet: 'p.s' },
+  },
+  {
+    name: 'duckduckgo',
+    url: (q) => `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`,
+    sel: { row: '.result', title: '.result__a', link: '.result__a', snippet: '.result__snippet' },
+  },
+  {
+    name: 'startpage',
+    url: (q) => `https://www.startpage.com/sp/search?query=${encodeURIComponent(q)}`,
+    sel: { row: '.w-gl__result', title: '.w-gl__result-title', link: 'a.w-gl__result-url, a', snippet: '.w-gl__description' },
+  },
+  {
+    name: 'bing',
+    url: (q) => `https://www.bing.com/search?q=${encodeURIComponent(q)}`,
+    sel: { row: '#b_results > li.b_algo', title: 'h2', link: 'h2 a', snippet: '.b_caption p, .b_algoSlug' },
+  },
+  {
+    name: 'google',
+    url: (q) => `https://www.google.com/search?q=${encodeURIComponent(q)}`,
+    sel: { row: 'div.g, div[data-hveid] > div', title: 'h3', link: 'a[href^="http"]', snippet: 'div[data-sncf], .VwiC3b' },
+  },
+];
+
+const CHALLENGE = /captcha|unusual traffic|are you a robot|verify you are human|automated queries|access denied/i;
+
+/**
+ * Headers an ordinary browser sends. Most refusals are a missing User-Agent rather than
+ * anything sophisticated, and sending real ones is the difference between a redirect and
+ * a page of results.
+ */
+const BROWSERISH = {
+  'user-agent':
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'accept-language': 'en-GB,en;q=0.9',
+};
+
+/** Engines whose results survive a plain fetch, with the pattern that pulls rows out. */
+const HTTP_ENGINES: Array<{ name: string; url: (q: string) => string; parse: (html: string) => SearchHit[] }> = [
+  {
+    name: 'mojeek',
+    url: (q) => `https://www.mojeek.com/search?q=${encodeURIComponent(q)}`,
+    parse: (html) => matchAll(html, /<a[^>]+class="title"[^>]+href="([^"]+)"[^>]*>(.*?)<\/a>[\s\S]{0,400}?<p class="s">([\s\S]*?)<\/p>/g),
+  },
+  {
+    name: 'duckduckgo',
+    url: (q) => `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`,
+    parse: (html) =>
+      matchAll(
+        html,
+        /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]{0,800}?class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g,
+      ),
+  },
+];
+
+function matchAll(html: string, re: RegExp): SearchHit[] {
+  const out: SearchHit[] = [];
+  for (const m of html.matchAll(re)) {
+    const url = decodeRedirect(m[1] ?? '');
+    const title = strip(m[2] ?? '');
+    if (!url.startsWith('http') || !title) continue;
+    out.push({ title, url, snippet: strip(m[3] ?? '') });
+  }
+  return out;
+}
+
+/** DuckDuckGo wraps every result in its own redirect; the real URL is a query parameter. */
+function decodeRedirect(href: string): string {
+  const raw = href.startsWith('//') ? `https:${href}` : href;
+  try {
+    const u = new URL(raw);
+    const target = u.searchParams.get('uddg');
+    return target ? decodeURIComponent(target) : raw;
+  } catch {
+    return raw;
+  }
+}
+
+async function searchOverHttp(
+  ctx: ToolContext,
+  query: string,
+  limit: number,
+): Promise<{ engine: string; hits: SearchHit[]; tried: string[] }> {
+  const tried: string[] = [];
+  for (const engine of HTTP_ENGINES) {
+    tried.push(engine.name);
+    try {
+      const res = await fetch(engine.url(query), {
+        headers: BROWSERISH,
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) continue;
+      const html = await res.text();
+      if (CHALLENGE.test(html.slice(0, 4_000))) {
+        ctx.logger.warn('search.http.blocked', { engine: engine.name });
+        continue;
+      }
+      const hits = engine.parse(html).slice(0, limit);
+      if (hits.length > 0) return { engine: engine.name, hits, tried };
+    } catch (e) {
+      ctx.logger.warn('search.http.failed', { engine: engine.name, error: (e as Error).message });
+    }
+  }
+  return { engine: '', hits: [], tried };
+}
+
+async function searchInBrowser(
+  ctx: ToolContext,
+  query: string,
+  limit: number,
+): Promise<{ engine: string; hits: SearchHit[]; tried: string[]; blocked: string[] }> {
+  const tried: string[] = [];
+  const blocked: string[] = [];
+
+  for (const engine of ENGINES) {
+    tried.push(engine.name);
+    try {
+      const page = await renderPageText(ctx, engine.url(query));
+      if (CHALLENGE.test(page.text.slice(0, 3_000))) {
+        // A challenge page is not a failure to retry — it is that engine saying no.
+        blocked.push(engine.name);
+        ctx.logger.warn('search.blocked', { engine: engine.name });
+        continue;
+      }
+      const rows = await scrapeResults(ctx, engine.sel);
+      const hits = rows
+        .filter((r) => r.url && !r.url.includes(new URL(engine.url('x')).hostname))
+        .slice(0, limit);
+      if (hits.length > 0) return { engine: engine.name, hits, tried, blocked };
+    } catch (e) {
+      ctx.logger.warn('search.engine.failed', { engine: engine.name, error: (e as Error).message });
+    }
+  }
+  return { engine: '', hits: [], tried, blocked };
+}
 
 async function run(
   provider: SearchProvider,
