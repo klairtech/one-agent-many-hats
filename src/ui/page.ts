@@ -262,7 +262,7 @@ const VIEWS = [
   { id: 'analytics', label: 'Analytics', title: 'Analytics', blurb: 'Read back from the run records already on your disk. Nothing is collected and nothing is sent.', load: () => loadAnalytics() },
   { id: 'space', label: 'Storage', title: 'Storage', blurb: 'What each part costs in megabytes, and what deleting it costs you. Those are different questions.', load: () => loadSpace() },
   { id: 'history', label: 'Conversations', title: 'Past conversations', blurb: 'Every run is already written to disk with its transcript and audit trail. This reads them back.', load: () => loadHistory() },
-  { id: 'connectors', label: 'Connectors', title: 'Other people\u2019s tools', blurb: 'MCP servers, local or cloud. Their tools go through the same executor, allowlist and approval as the built-in ones.', load: () => loadConnectors() },
+  { id: 'connectors', label: 'Connectors', title: 'Connectors and setup', blurb: 'What the tools need before they can work \u2014 search keys, hosts, mail \u2014 and MCP servers, whose tools go through the same executor as the built-in ones.', load: () => loadConnectors() },
   { id: 'schedule', label: 'Schedule', title: 'Runs without you', blurb: 'Work that fires on a timetable, and messages that arrive from off this machine. Neither can approve itself.', load: () => loadSchedules() },
   { id: 'setup', label: 'Setup', title: 'Models and providers', blurb: 'Connect a model, see live prices, install one locally. Keys are read from your environment or stored 0600, never in config.json.', load: () => loadSetup() },
 ];
@@ -1240,12 +1240,159 @@ async function loadHistory() {
   v.appendChild(wrap);
 }
 
+/**
+ * Configuration for the tools that need something before they work. These are the ones the
+ * Tools view flags as "needs setup", and until now the only way to set them was to hand-edit
+ * config.json — which is not a reasonable thing to ask of anyone.
+ */
+async function paintIntegrations(host) {
+  host.innerHTML = '<p class="sm" style="color:var(--ink-2)">Loading…</p>';
+  const d = await api('/api/integrations');
+  host.innerHTML = '';
+  const wrap = st(el('div'), 'display:flex;flex-direction:column;gap:14px');
+
+  const card = (title, note) => {
+    const c = st(el('section'), 'background:var(--surface);border-radius:14px;padding:16px 18px;display:flex;flex-direction:column;gap:10px');
+    c.appendChild(st(el('p', 'h3', title), 'margin:0'));
+    if (note) c.appendChild(st(el('p', 'xs', note), 'margin:0;color:var(--ink-3);text-wrap:pretty'));
+    wrap.appendChild(c);
+    return c;
+  };
+  const field = (parent, placeholder, value, type) => {
+    const i = el('input', 'fld');
+    i.placeholder = placeholder;
+    if (value !== undefined && value !== null) i.value = value;
+    if (type) i.type = type;
+    parent.appendChild(i);
+    return i;
+  };
+  const note = (parent) => st(parent.appendChild(el('p', 'xs')), 'margin:0;color:var(--ink-3)');
+
+  // --- web search ---
+  const configured = d.search.providers.find((p) => p.hint);
+  const sc = card(
+    'Web search',
+    configured
+      ? 'A search API is configured, so searches use it. Without one it falls back to fetching a lightweight search endpoint directly, then to a headless browser.'
+      : 'No key set. Search still works by fetching a lightweight endpoint directly, but an API is faster, more reliable and returns better results. Brave gives 2,000 queries a month free.',
+  );
+  const srow = st(el('div'), 'display:flex;flex-wrap:wrap;gap:8px;align-items:center');
+  const sprov = el('select', 'fld');
+  st(sprov, 'max-width:150px');
+  d.search.providers.forEach((p) => {
+    const o = el('option', '', p.id + (p.hint ? ' · set' : ''));
+    o.value = p.id;
+    sprov.appendChild(o);
+  });
+  const skey = field(srow, 'API key — stored 0600, never in config.json', '', 'password');
+  st(skey, 'flex:1;min-width:200px');
+  srow.insertBefore(sprov, skey);
+  const ssave = el('button', 'btn1 btnsm', 'Save key');
+  srow.appendChild(ssave);
+  sc.appendChild(srow);
+  const smsg = note(sc);
+  ssave.onclick = async () => {
+    try {
+      await post('/api/integrations', { kind: 'search-key', provider: sprov.value, secret: skey.value });
+      skey.value = '';
+      smsg.textContent = 'Saved.'; smsg.style.color = 'var(--ok)';
+      paintIntegrations(host);
+    } catch (e) { smsg.textContent = e.message; smsg.style.color = 'var(--dang)'; }
+  };
+
+  // --- remote hosts ---
+  const rc = card('Remote hosts', 'Machines ssh_run may reach. The agent can never name a host that is not listed here. Key-based auth only — no password is read or stored.');
+  if (d.remote.length) {
+    const list = st(el('div'), 'display:flex;flex-direction:column;gap:6px');
+    d.remote.forEach((h) => {
+      const row = st(el('div'), 'display:flex;align-items:center;gap:9px');
+      row.appendChild(statusPill(h.alias, 'ok'));
+      row.appendChild(st(el('span', 'xs mono', (h.user ? h.user + '@' : '') + h.hostname + (h.port !== 22 ? ':' + h.port : '')), 'flex:1;color:var(--ink-2)'));
+      const rm = el('button', 'btn3 btnsm', 'Remove');
+      rm.onclick = async () => {
+        if (!(await ask('Remove host ' + h.alias + '?', 'ssh_run will no longer be able to reach it.', 'Remove', true))) return;
+        await post('/api/integrations', { kind: 'remote-host', alias: h.alias, host: null });
+        paintIntegrations(host);
+      };
+      row.appendChild(rm);
+      list.appendChild(row);
+    });
+    rc.appendChild(list);
+  }
+  const halias = field(rc, 'alias, e.g. web1');
+  const hname = field(rc, 'hostname or IP');
+  const huser = field(rc, 'user (optional)');
+  const hkey = field(rc, 'identity file (optional), e.g. ~/.ssh/id_ed25519');
+  const hmsg = note(rc);
+  const hadd = el('button', 'btn1 btnsm', 'Add host');
+  hadd.onclick = async () => {
+    try {
+      await post('/api/integrations', {
+        kind: 'remote-host',
+        alias: halias.value,
+        host: { hostname: hname.value, user: huser.value, identityFile: hkey.value },
+      });
+      paintIntegrations(host);
+    } catch (e) { hmsg.textContent = e.message; hmsg.style.color = 'var(--dang)'; }
+  };
+  rc.appendChild(st(hadd, 'align-self:flex-start'));
+
+  // --- email ---
+  const ec = card('Outgoing mail', 'Where send_email sends from, and the only addresses it may send to. There is no wildcard: choosing who the agent writes to on your behalf is your decision, not the model\u2019s.');
+  const ehost = field(ec, 'SMTP host, e.g. smtp.gmail.com', d.email.host);
+  const eport = field(ec, 'port (587 STARTTLS, 465 TLS)', d.email.port);
+  const efrom = field(ec, 'from address', d.email.from);
+  const euser = field(ec, 'username (defaults to the from address)', d.email.user);
+  const epass = field(ec, d.email.passwordHint ? 'password set (' + d.email.passwordHint + ') — type to replace' : 'password or app password', '', 'password');
+  const eto = field(ec, 'allowed recipients, comma separated', (d.email.allowRecipients || []).join(', '));
+  const emsg = note(ec);
+  const esave = el('button', 'btn1 btnsm', 'Save');
+  esave.onclick = async () => {
+    try {
+      await post('/api/integrations', {
+        kind: 'email',
+        secret: epass.value,
+        email: { host: ehost.value, port: eport.value, from: efrom.value, user: euser.value, allowRecipients: eto.value },
+      });
+      epass.value = '';
+      emsg.textContent = 'Saved.'; emsg.style.color = 'var(--ok)';
+      paintIntegrations(host);
+    } catch (e) { emsg.textContent = e.message; emsg.style.color = 'var(--dang)'; }
+  };
+  ec.appendChild(st(esave, 'align-self:flex-start'));
+
+  // --- browser ---
+  const bc = card('Browser', 'The built-in browser runs headless so nothing appears on screen while the agent works. Turn this on to watch it.');
+  const brow = st(el('label'), 'display:flex;align-items:center;gap:9px;cursor:pointer');
+  const bchk = el('input');
+  bchk.type = 'checkbox';
+  bchk.checked = d.browser.headful;
+  bchk.onchange = async () => {
+    await post('/api/integrations', { kind: 'browser', headful: bchk.checked });
+  };
+  brow.appendChild(bchk);
+  brow.appendChild(st(el('span', 'sm', 'Show the browser window'), ''));
+  bc.appendChild(brow);
+
+  host.appendChild(wrap);
+}
+
 async function loadConnectors() {
   const v = $('#view');
+  v.innerHTML = '';
+  const shell = st(el('div'), 'max-width:900px;display:flex;flex-direction:column;min-height:0');
+  subTabs(shell, 'connectors', [
+    { id: 'setup', label: 'Configuration', render: (b) => paintIntegrations(b) },
+    { id: 'mcp', label: 'MCP servers', render: (b) => paintMcp(b) },
+  ]);
+  v.appendChild(shell);
+}
+
+async function paintMcp(v) {
   v.innerHTML = '<p class="sm" style="color:var(--ink-2)">Loading…</p>';
   const d = await api('/api/connectors');
   v.innerHTML = '';
-  const wrap = st(el('div'), 'max-width:900px;display:flex;flex-direction:column;gap:14px');
+  const wrap = st(el('div'), 'display:flex;flex-direction:column;gap:14px');
 
   const form = st(el('section'), 'background:var(--surface);border-radius:14px;padding:16px 18px;display:flex;flex-direction:column;gap:10px');
   form.appendChild(st(el('p', 'h3', 'Add a connector'), 'margin:0'));
@@ -1272,7 +1419,7 @@ async function loadConnectors() {
       else { payload.command = target.value.trim(); payload.args = argsIn.value.trim(); }
       await post('/api/connector', payload);
       idIn.value = ''; target.value = ''; argsIn.value = '';
-      loadConnectors();
+      paintMcp(v);
     } catch (e) { msg.textContent = 'Refused: ' + e.message; msg.style.color = 'var(--dang)'; }
     addBtn.disabled = false;
   };
@@ -1304,12 +1451,12 @@ async function loadConnectors() {
     }
     const acts = st(el('div'), 'display:flex;gap:8px;margin-top:12px');
     const toggle = el('button', 'btn3 btnsm', srv.disabled ? 'Enable' : 'Disable');
-    toggle.onclick = async () => { await post('/api/connector', { action: 'toggle', id: srv.id }); loadConnectors(); };
+    toggle.onclick = async () => { await post('/api/connector', { action: 'toggle', id: srv.id }); paintMcp(v); };
     const rm = el('button', 'btn3 btnsm', 'Remove');
     rm.onclick = async () => {
       if (!(await ask('Remove this connector?', srv.id + ' — ' + srv.target, 'Remove', true))) return;
       await post('/api/connector', { action: 'remove', id: srv.id });
-      loadConnectors();
+      paintMcp(v);
     };
     acts.appendChild(toggle); acts.appendChild(rm);
     card.appendChild(acts);
