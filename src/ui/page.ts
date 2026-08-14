@@ -54,6 +54,9 @@ svg{display:block;flex:none}
 .eyebrow{font-size:11px;line-height:1.4;font-weight:600;letter-spacing:.07em;text-transform:uppercase}
 .num{font-variant-numeric:tabular-nums lining-nums;letter-spacing:-.02em}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+
+.btn1.danger{background:var(--dang);border-color:var(--dang);color:#fff}
+.btn1.danger:hover{filter:brightness(1.08)}
 .btn1{background:var(--brand);color:var(--on-brand);border:1px solid transparent;font-weight:600}
 .btn1:hover{background:var(--brand-strong)}
 .btn2{background:var(--canvas);color:var(--ink);border:1px solid var(--ink-3);font-weight:600}
@@ -250,7 +253,7 @@ const VIEWS = [
   { id: 'registry', label: 'Registry', title: 'Skills, rules and tools', blurb: 'Behaviour composed from files you can read. Every rule above prompt strength names the code that enforces it.', load: () => loadRegistry() },
   { id: 'analytics', label: 'Analytics', title: 'Analytics', blurb: 'Read back from the run records already on your disk. Nothing is collected and nothing is sent.', load: () => loadAnalytics() },
   { id: 'space', label: 'Storage', title: 'Storage', blurb: 'What each part costs in megabytes, and what deleting it costs you. Those are different questions.', load: () => loadSpace() },
-  { id: 'history', label: 'History', title: 'Past conversations', blurb: 'Every run is already written to disk with its transcript and audit trail. This reads them back.', load: () => loadHistory() },
+  { id: 'history', label: 'Conversations', title: 'Past conversations', blurb: 'Every run is already written to disk with its transcript and audit trail. This reads them back.', load: () => loadHistory() },
   { id: 'connectors', label: 'Connectors', title: 'Other people\u2019s tools', blurb: 'MCP servers, local or cloud. Their tools go through the same executor, allowlist and approval as the built-in ones.', load: () => loadConnectors() },
   { id: 'schedule', label: 'Schedule', title: 'Runs without you', blurb: 'Work that fires on a timetable, and messages that arrive from off this machine. Neither can approve itself.', load: () => loadSchedules() },
   { id: 'setup', label: 'Setup', title: 'Models and providers', blurb: 'Connect a model, see live prices, install one locally. Keys are read from your environment or stored 0600, never in config.json.', load: () => loadSetup() },
@@ -271,6 +274,10 @@ function renderNav() {
     icon.innerHTML = ICONS[v.id] || '';
     st(icon, 'flex:none;display:grid;place-items:center');
     b.appendChild(icon);
+    // Below 820px the labels are hidden and every item is an unlabelled glyph — which is
+    // how "History" became impossible to find. [Reported, 2026-08-15.]
+    b.title = v.label + ' — ' + v.title;
+    b.setAttribute('aria-label', v.label);
     b.appendChild(st(el('span', 'navlabel', v.label), 'min-width:0;flex:1'));
     if (badges[v.id]) {
       b.appendChild(st(el('span', 'num xs', String(badges[v.id])), 'flex:none;background:var(--warn);color:var(--canvas);border-radius:999px;min-width:17px;height:17px;display:grid;place-items:center;font-weight:700;padding:0 4px'));
@@ -446,7 +453,10 @@ function renderRun() {
   send.id = 'send';
   const fresh = el('button', 'btn3 btnsm', 'New');
   fresh.title = 'Clear the conversation. Memory is untouched.';
-  wrap.appendChild(attach); wrap.appendChild(input); wrap.appendChild(send); wrap.appendChild(fresh);
+  const past = el('button', 'btn3 btnsm', 'Past');
+  past.title = 'Older conversations — every run is kept with its full transcript';
+  past.onclick = () => go('history');
+  wrap.appendChild(attach); wrap.appendChild(input); wrap.appendChild(send); wrap.appendChild(fresh); wrap.appendChild(past);
   composer.appendChild(wrap);
   v.appendChild(composer);
   paintAttachments();
@@ -517,6 +527,66 @@ function agentBlock() {
   return { row, body };
 }
 
+/**
+ * Modals, because a browser alert is a different application interrupting yours. It cannot
+ * be styled, it blocks the whole page, it says "127.0.0.1:4173 says", and on a confirm the
+ * destructive option is indistinguishable from the safe one. Everything here is one dialog
+ * shape: a title, a body, and the buttons the situation actually needs.
+ */
+function modal(opts) {
+  return new Promise((resolve) => {
+    const shade = st(el('div'), 'position:fixed;inset:0;background:rgba(12,14,20,.55);backdrop-filter:blur(2px);display:grid;place-items:center;z-index:120;animation:fade .12s ease both');
+    const box = st(el('div'), 'background:var(--canvas);border:1px solid var(--line);border-radius:16px;padding:22px 24px;width:min(480px,92vw);max-height:80vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.28);animation:rise .16s ease both');
+
+    box.appendChild(st(el('p', 'h3', opts.title), 'margin:0 0 8px'));
+    if (opts.body) {
+      const b = st(el('p', 'sm'), 'margin:0;color:var(--ink-2);text-wrap:pretty;white-space:pre-wrap');
+      b.textContent = opts.body;
+      box.appendChild(b);
+    }
+    if (opts.detail) {
+      const pre = st(el('pre', 'mono xs'), 'margin:12px 0 0;background:var(--surface);border-radius:10px;padding:12px 14px;overflow:auto;max-height:280px;line-height:1.55');
+      pre.textContent = opts.detail;
+      box.appendChild(pre);
+    }
+
+    const row = st(el('div'), 'display:flex;gap:8px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap');
+    const close = (value) => { document.removeEventListener('keydown', onKey); shade.remove(); resolve(value); };
+    (opts.buttons || [{ label: 'OK', value: true, kind: 'btn1' }]).forEach((b) => {
+      const btn = el('button', (b.kind || 'btn3') + ' btnsm', b.label);
+      btn.onclick = () => close(b.value);
+      row.appendChild(btn);
+    });
+    box.appendChild(row);
+
+    const onKey = (e) => {
+      if (e.key === 'Escape') close(opts.cancelValue === undefined ? false : opts.cancelValue);
+    };
+    document.addEventListener('keydown', onKey);
+    shade.onclick = (e) => { if (e.target === shade) close(opts.cancelValue === undefined ? false : opts.cancelValue); };
+    shade.appendChild(box);
+    document.body.appendChild(shade);
+    const first = row.querySelector('button');
+    if (first) first.focus();
+  });
+}
+
+function say(title, body, detail) {
+  return modal({ title, body, detail, buttons: [{ label: 'Close', value: true, kind: 'btn2' }] });
+}
+
+function ask(title, body, confirmLabel, danger) {
+  return modal({
+    title,
+    body,
+    cancelValue: false,
+    buttons: [
+      { label: 'Cancel', value: false, kind: 'btn3' },
+      { label: confirmLabel || 'Confirm', value: true, kind: danger ? 'btn1 danger' : 'btn1' },
+    ],
+  });
+}
+
 function statusPill(text, tone) {
   const map = { ok: ['var(--ok-soft)', 'var(--ok)'], warn: ['var(--warn-soft)', 'var(--warn)'], dang: ['var(--dang-soft)', 'var(--dang)'], idle: ['var(--surface-2)', 'var(--ink-2)'] };
   const c = map[tone] || map.idle;
@@ -551,7 +621,7 @@ async function openAttach(dir) {
   const at = typeof dir === 'string' ? dir : '.';
   let d;
   try { d = await api('/api/files?path=' + encodeURIComponent(at)); }
-  catch (e) { alert('Could not list files: ' + e.message); return; }
+  catch (e) { say('Could not list files', e.message); return; }
 
   const back = document.querySelector('#attach-modal');
   if (back) back.remove();
@@ -841,7 +911,7 @@ async function showPreview(rel, intoOverlay) {
     full.onclick = () => { $('#overlay').hidden = false; $('#overlay-title').textContent = name; showPreview(rel, true); };
     const rev = el('button', 'ic'); rev.title = 'Show in folder'; rev.setAttribute('aria-label', 'Show in folder');
     rev.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
-    rev.onclick = async () => { try { await post('/api/reveal', { path: rel }); } catch (e) { alert(e.message); } };
+    rev.onclick = async () => { try { await post('/api/reveal', { path: rel }); } catch (e) { say('Could not reveal it', e.message); } };
     const open = el('a', 'ic'); open.href = rawUrl(rel); open.target = '_blank'; open.rel = 'noreferrer noopener'; open.title = 'Open raw';
     open.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6M10 14 21 3"/></svg>';
     header.appendChild(full); header.appendChild(rev); header.appendChild(open);
@@ -1050,8 +1120,9 @@ async function loadSchedules() {
       runNow.disabled = true; runNow.textContent = 'Running…';
       try {
         const r = await post('/api/schedule', { id: s.id, action: 'run' });
-        alert(r.error ? 'Failed: ' + r.error : r.answer);
-      } catch (e) { alert('Failed: ' + e.message); }
+        if (r.error) await say('That run did not finish', r.error);
+        else await say('Run finished', '', r.answer);
+      } catch (e) { await say('That run did not finish', e.message); }
       loadSchedules();
     };
     const toggle = el('button', 'btn3 btnsm', s.enabled ? 'Disable' : 'Enable');
@@ -1061,7 +1132,7 @@ async function loadSchedules() {
     };
     const rm = el('button', 'btn3 btnsm', 'Remove');
     rm.onclick = async () => {
-      if (!confirm('Remove this schedule?')) return;
+      if (!(await ask('Remove this schedule?', s.request, 'Remove', true))) return;
       await post('/api/schedule', { id: s.id, action: 'rm' });
       loadSchedules();
     };
@@ -1223,7 +1294,11 @@ async function loadConnectors() {
     const toggle = el('button', 'btn3 btnsm', srv.disabled ? 'Enable' : 'Disable');
     toggle.onclick = async () => { await post('/api/connector', { action: 'toggle', id: srv.id }); loadConnectors(); };
     const rm = el('button', 'btn3 btnsm', 'Remove');
-    rm.onclick = async () => { if (confirm('Remove ' + srv.id + '?')) { await post('/api/connector', { action: 'remove', id: srv.id }); loadConnectors(); } };
+    rm.onclick = async () => {
+      if (!(await ask('Remove this connector?', srv.id + ' — ' + srv.target, 'Remove', true))) return;
+      await post('/api/connector', { action: 'remove', id: srv.id });
+      loadConnectors();
+    };
     acts.appendChild(toggle); acts.appendChild(rm);
     card.appendChild(acts);
     wrap.appendChild(card);
@@ -1300,7 +1375,7 @@ async function telegramCard() {
   };
   const forget = el('button', 'btn3 btnsm', 'Forget');
   forget.onclick = async () => {
-    if (!confirm('Delete the stored token and stop listening?')) return;
+    if (!(await ask('Forget the Telegram token?', 'The bot stops listening. The token is deleted from credentials.json and cannot be recovered here.', 'Forget it', true))) return;
     await post('/api/telegram', { action: 'forget' });
     loadSchedules();
   };
@@ -1323,44 +1398,94 @@ async function loadProposals() {
     v.appendChild(st(el('p', 'sm', 'Nothing proposed yet. Proposals appear when the same gap turns up more than once.'), 'color:var(--ink-2)'));
     return;
   }
-  const wrap = st(el('div'), 'max-width:900px;display:flex;flex-direction:column;gap:14px');
-  p.proposals.forEach((x) => {
-    const card = st(el('section'), 'background:var(--surface);border-radius:14px;padding:16px 18px');
-    const top = st(el('div'), 'display:flex;flex-wrap:wrap;align-items:center;gap:9px');
-    top.appendChild(statusPill(x.kind, x.kind === 'tool' ? 'warn' : 'idle'));
-    top.appendChild(st(el('span', 'h3', x.title), 'min-width:180px;flex:1'));
-    top.appendChild(st(el('span', 'xs num', 'seen ' + x.occurrences + '×'), 'color:var(--ink-3)'));
-    top.appendChild(statusPill(x.status, x.status === 'promoted' ? 'ok' : x.status === 'rejected' ? 'dang' : 'idle'));
-    card.appendChild(top);
-    card.appendChild(st(el('p', 'sm', x.rationale), 'margin:8px 0 0;color:var(--ink-2);text-wrap:pretty'));
 
-    if (x.kind === 'tool') {
-      card.appendChild(el('p', 'xs callout warn')).textContent = 'A tool never promotes itself at any autonomy level. Promoting this prints the contract; a human writes the handler and its gates.';
-    }
+  const pending = p.proposals.filter((x) => x.status === 'draft');
+  const decided = p.proposals.filter((x) => x.status !== 'draft');
+  const host = st(el('div'), 'max-width:900px;display:flex;flex-direction:column;min-height:0');
 
-    if (x.status === 'draft') {
-      const row = st(el('div'), 'display:flex;flex-wrap:wrap;gap:8px;margin-top:12px');
-      const pre = st(el('pre', 'mono'), 'display:none;margin:12px 0 0;background:var(--canvas);border-radius:10px;padding:13px 15px;overflow:auto;max-height:340px;line-height:1.6');
-      pre.textContent = x.content;
-      const view = el('button', 'btn3 btnsm', 'View');
-      view.onclick = () => { pre.style.display = pre.style.display === 'none' ? 'block' : 'none'; };
-      const prom = el('button', 'btn1 btnsm', 'Promote');
-      prom.onclick = async () => {
-        try {
-          const r = await post('/api/proposal', { id: x.id, action: 'promote' });
-          alert(r.manual || ('promoted → ' + r.written));
-        } catch (e) { alert('Refused: ' + e.message); }
-        loadProposals(); loadState();
-      };
-      const rej = el('button', 'btn3 btnsm', 'Reject');
-      rej.onclick = async () => { await post('/api/proposal', { id: x.id, action: 'reject' }); loadProposals(); loadState(); };
-      row.appendChild(view); row.appendChild(prom); row.appendChild(rej);
-      card.appendChild(row);
-      card.appendChild(pre);
-    }
-    wrap.appendChild(card);
+  // Waiting on you is the only tab with anything to do, so it leads and carries the count.
+  subTabs(host, 'proposals', [
+    {
+      id: 'pending',
+      label: 'Waiting on you' + (pending.length ? ' · ' + pending.length : ''),
+      render: (body) => paintProposals(body, pending, true),
+    },
+    { id: 'decided', label: 'Decided' + (decided.length ? ' · ' + decided.length : ''), render: (body) => paintProposals(body, decided, false) },
+  ]);
+  v.appendChild(host);
+}
+
+/**
+ * A list, not a wall of cards. Each row is one line until you open it — the rationale, the
+ * evidence and the full document were previously all expanded at once, which made three
+ * proposals unreadable and ten impossible.
+ */
+function paintProposals(host, items, actionable) {
+  host.innerHTML = '';
+  if (!items.length) {
+    host.appendChild(st(el('p', 'sm', actionable ? 'Nothing waiting. Proposals arrive when the same gap turns up more than once.' : 'Nothing decided yet.'), 'color:var(--ink-2)'));
+    return;
+  }
+
+  const list = st(el('div'), 'display:flex;flex-direction:column;gap:1px;background:var(--line);border-radius:14px;overflow:hidden');
+  items.forEach((x) => {
+    const row = st(el('div'), 'background:var(--canvas);padding:0');
+
+    const head = st(el('button'), 'display:flex;align-items:center;gap:11px;width:100%;text-align:left;border:0;background:none;color:inherit;font-family:inherit;padding:13px 16px;cursor:pointer');
+    head.appendChild(statusPill(x.kind, x.kind === 'tool' ? 'warn' : 'idle'));
+    head.appendChild(st(el('span', 'sm', x.title), 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'));
+    if (x.occurrences > 1) head.appendChild(st(el('span', 'xs num', x.occurrences + '×'), 'color:var(--ink-3);flex:none'));
+    if (!actionable) head.appendChild(statusPill(x.status, x.status === 'promoted' ? 'ok' : 'dang'));
+    const chev = st(el('span', 'xs'), 'color:var(--ink-3);flex:none');
+    chev.textContent = '›';
+    head.appendChild(chev);
+    row.appendChild(head);
+
+    const detail = st(el('div'), 'display:none;padding:0 16px 16px;border-top:1px solid var(--line)');
+    head.onclick = () => {
+      const open = detail.style.display === 'block';
+      detail.style.display = open ? 'none' : 'block';
+      chev.textContent = open ? '›' : '⌄';
+      if (!open && !detail.dataset.built) buildProposalDetail(detail, x, actionable);
+    };
+    row.appendChild(detail);
+    list.appendChild(row);
   });
-  v.appendChild(wrap);
+  host.appendChild(list);
+}
+
+function buildProposalDetail(host, x, actionable) {
+  host.dataset.built = '1';
+  host.appendChild(st(el('p', 'sm', x.rationale), 'margin:14px 0 0;color:var(--ink-2);text-wrap:pretty'));
+
+  if (x.kind === 'tool') {
+    host.appendChild(el('p', 'xs callout warn')).textContent =
+      'A tool never promotes itself at any autonomy level. Promoting a contract prints it for a human to implement; a patch is applied only after the build and the whole test suite pass.';
+  }
+
+  const pre = st(el('pre', 'mono xs'), 'margin:12px 0 0;background:var(--surface);border-radius:10px;padding:13px 15px;overflow:auto;max-height:320px;line-height:1.6');
+  pre.textContent = x.content;
+  host.appendChild(pre);
+
+  if (!actionable) return;
+  const row = st(el('div'), 'display:flex;flex-wrap:wrap;gap:8px;margin-top:14px');
+  const prom = el('button', 'btn1 btnsm', 'Promote');
+  prom.onclick = async () => {
+    prom.disabled = true;
+    try {
+      const r = await post('/api/proposal', { id: x.id, action: 'promote' });
+      await say(r.written ? 'Promoted' : 'Not promoted', r.manual || ('written to ' + r.written));
+    } catch (e) { await say('Refused', e.message); }
+    loadProposals(); loadState();
+  };
+  const rej = el('button', 'btn3 btnsm', 'Reject');
+  rej.onclick = async () => {
+    if (!(await ask('Reject this proposal?', x.title, 'Reject', true))) return;
+    await post('/api/proposal', { id: x.id, action: 'reject' });
+    loadProposals(); loadState();
+  };
+  row.appendChild(prom); row.appendChild(rej);
+  host.appendChild(row);
 }
 
 // --- registry ---------------------------------------------------------------------
@@ -1621,9 +1746,9 @@ async function loadSpace() {
 
   const doDelete = async (entry, workspace) => {
     const lead = entry.reversibility === 'permanent' ? 'This cannot be undone.' : '';
-    if (!confirm('Delete ' + entry.label.toLowerCase() + ' (' + fmtBytes(entry.bytes) + ')?\\n\\n' + lead + '\\n\\n' + entry.cost)) return;
+    if (!(await ask('Delete ' + entry.label.toLowerCase() + '?', fmtBytes(entry.bytes) + ' — ' + lead + '\n\n' + entry.cost, 'Delete', true))) return;
     const r = await post('/api/space/prune', Object.assign({ target: entry.key }, workspace ? { workspace } : {}));
-    alert('Freed ' + fmtBytes(r.bytesFreed) + ' across ' + r.itemsRemoved + ' files.');
+    await say('Freed ' + fmtBytes(r.bytesFreed), r.itemsRemoved + ' files removed.');
     loadSpace();
   };
 
@@ -2021,7 +2146,11 @@ async function loadSetup() {
         li.appendChild(b);
       });
       const rm = el('button', 'btn3 btnsm', 'Remove');
-      rm.onclick = async () => { if (!confirm('Delete ' + m.name + ' from disk? This frees ' + fmtBytes(m.sizeBytes) + '.')) return; await post('/api/local-models/delete', { model: m.name }); paintLocal(); loadState(); };
+      rm.onclick = async () => {
+      if (!(await ask('Delete ' + m.name + '?', 'Frees ' + fmtBytes(m.sizeBytes) + ' from disk. You can pull it again later.', 'Delete', true))) return;
+      await post('/api/local-models/delete', { model: m.name });
+      paintLocal(); loadState();
+    };
       li.appendChild(rm);
       ul.appendChild(li);
     });
