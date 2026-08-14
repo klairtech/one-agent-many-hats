@@ -1,7 +1,7 @@
 ---
 id: outcome/answer
 kind: outcome
-version: 4
+version: 5
 description: Ad-hoc question against the workspace, answered with cited evidence.
 tools:
   - list_dir
@@ -17,6 +17,7 @@ tools:
   - propose_rule
   - propose_tool
   - propose_patch
+  - web_search
   - schedule_task
   - transcribe_audio
 step_budget: 14

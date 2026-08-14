@@ -1,7 +1,7 @@
 ---
 id: outcome/research
 kind: outcome
-version: 5
+version: 7
 description: Answer a question that needs sources from the web, with every claim traced to a URL.
 tools:
   - fetch_url
@@ -18,6 +18,7 @@ tools:
   - propose_rule
   - propose_tool
   - propose_patch
+  - web_search
   - schedule_task
   - send_email
   - transcribe_audio
@@ -26,7 +27,7 @@ tools:
   - browser_read
   - browser_open
   - mcp__*
-step_budget: 18
+step_budget: 28
 deterministic_seed: false
 stages:
   - intake
@@ -48,6 +49,13 @@ local file, and do not run `list_dir` or `search_files` to "check first": the su
 there, and a run that greps the disk for a charity's name has wasted two steps proving
 nothing. [Seen in a live run: a request to research an organisation searched 166 local files
 and then asked the user for a URL.]
+
+**Use `web_search` to find pages. Never `fetch_url` a search engine.** Google, Bing and
+DuckDuckGo block automated requests: you will get a redirect with no content, a CAPTCHA
+after the second query, or results about an entirely different subject. A live run searching
+for a thalassemia charity came back with pages about Windows 11. If `web_search` is absent
+or says no provider is configured, say so and stop — do not try to scrape your way around
+it, because the answers you get will look real and be wrong.
 
 **Find the URL yourself before asking for one.** If you do not know the address, search for
 it. Asking the person for a website is the answer of last resort, not the opening move — they

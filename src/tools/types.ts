@@ -80,6 +80,12 @@ export interface ToolContext {
   approve(request: ApprovalRequest): Promise<boolean>;
   /** ADR-0007: no human is present, so a denial is final and cannot be discussed. */
   unattended?: boolean;
+  /**
+   * The step budget is spent and the reflector is delivering. Tools are gone for a reason
+   * that has nothing to do with the allowlist, and saying "not permitted by the active
+   * skill" at that moment sends the model looking for a permission problem.
+   */
+  budgetExhausted?: boolean;
   /** Task descriptors from sandbox runs, mined later into tool proposals (paper §4). */
   recordTaskDescriptor(descriptor: string): void;
 }

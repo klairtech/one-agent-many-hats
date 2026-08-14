@@ -573,7 +573,11 @@ function modal(opts) {
     document.addEventListener('keydown', onKey);
     shade.onclick = (e) => { if (e.target === shade) close(opts.cancelValue === undefined ? false : opts.cancelValue); };
     shade.appendChild(box);
-    document.body.appendChild(shade);
+    // Inside #root, not body: the theme tokens are defined on [data-theme], which is the
+    // #root element. A modal appended to body inherits none of them, so var(--canvas)
+    // resolved to nothing and the box rendered with no background at all.
+    // [Seen in a screenshot, 2026-08-15.]
+    (document.getElementById('root') || document.body).appendChild(shade);
     const first = row.querySelector('button');
     if (first) first.focus();
   });
@@ -668,7 +672,7 @@ async function openAttach(dir) {
   box.appendChild(st(close, 'align-self:flex-end'));
   shade.onclick = (ev) => { if (ev.target === shade) shade.remove(); };
   shade.appendChild(box);
-  document.body.appendChild(shade);
+  (document.getElementById('root') || document.body).appendChild(shade);
 }
 
 async function doSend() {

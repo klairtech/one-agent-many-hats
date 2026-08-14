@@ -95,7 +95,11 @@ export class Executor {
       if (!opts.allowlist.has(call.name)) {
         throw new HatsError(
           'TOOL_NOT_ALLOWED',
-          `"${call.name}" is not permitted by the active skill's allowlist`,
+          this.ctx.budgetExhausted
+            ? `"${call.name}" is gone because the step budget is spent, not because it was ` +
+              `forbidden. This is the final step: write the best answer the evidence you ` +
+              `already have supports, say plainly what remains unknown, and stop.`
+            : `"${call.name}" is not permitted by the active skill's allowlist`,
           { tool: call.name, allowed: [...opts.allowlist] },
           'rule/allowlist-intersection',
         );

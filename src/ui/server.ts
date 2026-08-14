@@ -182,8 +182,13 @@ export async function startUi(
         // the stale copy back and silently reverted it — the frontier tier went back to
         // haiku hours after being pointed at sonnet, with nothing to show why.
         // [Seen in a live run, 2026-08-15.]
+        // Mutated in place, never reassigned. ProviderPool holds a reference to this
+        // object and reads it live on every resolve, so replacing it silently detaches the
+        // pool — the panel saved a new tier binding to disk and kept using the old model,
+        // with nothing in the UI to show why. [Seen in a live run, 2026-08-15.]
         const onDisk = await loadConfig();
-        session.config = { ...onDisk, ...pickLocalOverrides(session.config, onDisk) };
+        const keep = pickLocalOverrides(session.config, onDisk);
+        Object.assign(session.config, onDisk, keep);
 
         if (body.provider) session.config.defaultProvider = body.provider;
         if (body.tiers) session.config.tiers = { ...session.config.tiers, ...body.tiers };

@@ -235,8 +235,9 @@ export function validateConfig(cfg: HatsConfig): HatsConfig {
       });
     }
   }
-  if (cfg.limits.stepBudget < 1 || cfg.limits.stepBudget > 200) {
-    throw new HatsError('CONFIG_INVALID', 'limits.stepBudget must be 1..200', {
+  // 0 means no counter: the run ends when it delivers or stops making progress.
+  if (cfg.limits.stepBudget !== 0 && (cfg.limits.stepBudget < 1 || cfg.limits.stepBudget > 200)) {
+    throw new HatsError('CONFIG_INVALID', 'limits.stepBudget must be 0 (no limit) or 1..200', {
       value: cfg.limits.stepBudget,
     });
   }

@@ -287,7 +287,11 @@ function matchesTrigger(haystack: string, trigger: string): boolean {
  * chosen by keyword during work: a mis-selected coder must not be able to delete the file
  * tools the run needs. Selection is heuristic; capability removal should not be.
  */
-const NARROWING_ROLES = new Set(['guardian', 'critic', 'reflector']);
+// The reflector is deliberately absent. It is a delivery pass, not a review pass, and
+// stripping its tools produced "not permitted by the active skill's allowlist" on the last
+// step of a run that had simply run out of room — a permission error for something that was
+// never a permission problem. [Seen in a live run, 2026-08-15.]
+const NARROWING_ROLES = new Set(['guardian', 'critic']);
 
 // --- 4. Model tier ----------------------------------------------------------------
 

@@ -170,8 +170,13 @@ export function stalled(
     };
   }
 
-  // The same tool with the same summary means the same call producing the same nothing.
-  const signatures = recent.map((o) => `${o.tool}:${o.summary.slice(0, 80)}`);
+  // The artifact id is stamped onto the front of every summary and is unique per call, so
+  // comparing raw summaries meant two identical calls never looked identical and this check
+  // could not fire at all. Strip it before comparing.
+  // [Found by a test that expected a stuck run to stop and watched it run to the ceiling.]
+  const signatures = recent.map(
+    (o) => `${o.tool}:${o.summary.replace(/\[art_[a-f0-9]+\]\s*/g, '').slice(0, 80)}`,
+  );
   if (new Set(signatures).size === 1) {
     return {
       stalled: true,
