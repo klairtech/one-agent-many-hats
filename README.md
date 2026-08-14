@@ -413,7 +413,7 @@ If you want the serious version of this idea, that is
 [insighter.co.in](https://insighter.co.in).
 
 Free for noncommercial use, under the
-[PolyForm Noncommercial licence](LICENSE), with one condition: if you build on it, keep the
+[PolyForm Noncommercial licence](LICENSE.md), with one condition: if you build on it, keep the
 "Built on Klair Hats" credit visible and link back.
 
 Using it inside a business or in something you charge for needs a commercial licence. That
