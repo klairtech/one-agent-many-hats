@@ -99,6 +99,32 @@ fi
 
 # The control panel is the default surface. Setup happens there, not here.
 PORT="${HATS_UI_PORT:-4173}"
+
+# If something already holds the port, say what it is rather than dying with a raw
+# EADDRINUSE. Nearly always it is a panel from an earlier session that is still running,
+# and the useful thing is to say so and offer both ways out.
+port_holder() {
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1
+  fi
+}
+
+HOLDER="$(port_holder "$PORT")"
+if [ -n "$HOLDER" ]; then
+  if ps -p "$HOLDER" -o command= 2>/dev/null | grep -q "main.js ui"; then
+    warn "a control panel is already running on port $PORT (pid $HOLDER)"
+    printf '%s\n' "     Its address carries a token printed when it started, so it cannot be"
+    printf '%s\n' "     reconstructed here. Either stop it and run this again:"
+    printf '\n       kill %s && ./start.sh\n\n' "$HOLDER"
+    printf '%s\n' "     or start a second one on another port:"
+    printf '\n       HATS_UI_PORT=%s ./start.sh\n\n' "$((PORT + 1))"
+  else
+    warn "port $PORT is held by pid $HOLDER, which is not a control panel"
+    printf '\n       HATS_UI_PORT=%s ./start.sh\n\n' "$((PORT + 1))"
+  fi
+  exit 1
+fi
+
 step "starting the control panel"
 
 # Capture the tokenised URL the CLI prints, open it, then hand the terminal back to the
@@ -117,7 +143,15 @@ while IFS= read -r line; do
   [ -n "$URL" ] && break
 done < "$FIFO"
 
-if [ -n "$URL" ] && [ -z "${NO_OPEN:-}" ]; then
+# The read loop also ends when the panel dies without printing a URL. Announcing
+# "everything happens in that page" at that point is worse than the original error,
+# because it reads as success and sends you to a page that is not there.
+if [ -z "$URL" ]; then
+  wait $UI_PID 2>/dev/null || true
+  die "the control panel did not start — the error above says why"
+fi
+
+if [ -z "${NO_OPEN:-}" ]; then
   if command -v open >/dev/null 2>&1; then open "$URL" >/dev/null 2>&1 || true
   elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$URL" >/dev/null 2>&1 || true
   fi
