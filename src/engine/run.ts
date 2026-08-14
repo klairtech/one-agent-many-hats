@@ -1,0 +1,763 @@
+/**
+ * The run: composition at start, then one bounded reason-act loop wearing many hats.
+ *
+ * Paper §2.1/§2.2. One agent, one transcript, one audit trail. Roles are stances adopted
+ * for a step and discarded. Stages are gate and telemetry boundaries on that single
+ * timeline, not separate agents and not separate transcripts.
+ */
+
+import path from 'node:path';
+
+import type { HatsConfig, Profile, Tier } from '../core/config.js';
+import { HatsError, isHatsError, toHatsError } from '../core/errors.js';
+import { Logger } from '../core/logger.js';
+import { PathGuard, hatsHome, runDir, workspaceSlug } from '../core/paths.js';
+import { appendJsonl, ensureDir, newRunId, utcStamp, writeJsonAtomic } from '../core/store.js';
+import type { MemoryLayers } from '../memory/index.js';
+import type { ProviderPool } from '../providers/index.js';
+import type { Message, ToolCall } from '../providers/types.js';
+import type { Registry } from '../registry/loader.js';
+import type { Skill } from '../registry/types.js';
+import { ArtifactStore } from '../tools/artifacts.js';
+import { Executor } from '../tools/executor.js';
+import { ALL_TOOLS, toSchemas, toolRegistry } from '../tools/index.js';
+import type {
+  ApprovalRequest,
+  ClarificationRequest,
+  DocumentAccess,
+  ToolContext,
+  ToolHandler,
+  ToolObservation,
+} from '../tools/types.js';
+import {
+  buildAllowlist,
+  buildSystemParts,
+  buildSystemPrompt,
+  loadSkills,
+  route,
+  routeTier,
+  selectHat,
+  type Stage,
+} from './compose.js';
+import { renderGateDisclosure, renderGateFeedback, runVerificationGates, type GateFinding } from './gates.js';
+
+const DISCOVERY_TOOLS = new Set(['list_dir', 'read_file', 'search_files', 'recall_memory']);
+const MAX_GATE_RECOVERIES = 1;
+
+export interface RunEvent {
+  type:
+    | 'route'
+    | 'compose'
+    | 'step'
+    | 'hat'
+    | 'tool'
+    | 'stage'
+    | 'gate'
+    | 'review'
+    | 'answer'
+    | 'note';
+  message: string;
+  data?: Record<string, unknown>;
+}
+
+export interface RunOptions {
+  request: string;
+  workspaceRoot: string;
+  config: HatsConfig;
+  registry: Registry;
+  pool: ProviderPool;
+  memory: MemoryLayers;
+  documents?: DocumentAccess;
+  profile?: Profile;
+  skillOverride?: string;
+  /** Prior turns, for a REPL session. Each turn is still its own run record. */
+  history?: Message[];
+  ask?: (r: ClarificationRequest) => Promise<string>;
+  approve?: (r: ApprovalRequest) => Promise<boolean>;
+  /**
+   * Set when nobody is at the keyboard (ADR-0007). Recorded on the run so the audit trail
+   * keeps a person behind every entry, and it changes what a denied tool is told: advice
+   * to "ask what they want instead" is a dead end when there is no one to ask.
+   */
+  trigger?: { kind: 'schedule' | 'message'; id: string; actor: string };
+  onEvent?: (e: RunEvent) => void;
+  handlers?: ToolHandler[];
+  signal?: AbortSignal;
+}
+
+export interface RunResult {
+  runId: string;
+  ok: boolean;
+  answer: string;
+  stage: Stage;
+  steps: number;
+  stepBudget: number;
+  outcomeId: string;
+  profile: Profile;
+  gateFindings: GateFinding[];
+  observations: ToolObservation[];
+  messages: Message[];
+  artifactCount: number;
+  usage: { inputTokens: number; outputTokens: number; cacheWriteTokens: number; cacheReadTokens: number };
+  modelsUsed: string[];
+  protocolDowngraded: boolean;
+  /** Paper §4: repeated descriptors are the evidence that a named tool should exist. */
+  sandboxDescriptors: string[];
+  /** Set when the run paused for the human instead of finishing. */
+  pendingQuestion?: { question: string; options?: string[] };
+  runDir: string;
+}
+
+export async function runAgent(opts: RunOptions): Promise<RunResult> {
+  const started = Date.now();
+  const runId = newRunId();
+  const slug = workspaceSlug(opts.workspaceRoot);
+  const dir = runDir(slug, runId);
+  await ensureDir(dir);
+
+  const profile = opts.profile ?? opts.config.profile;
+  const logger = new Logger({ file: path.join(dir, 'audit.jsonl'), base: { runId }, minLevel: 'info' });
+  const emit = (e: RunEvent) => opts.onEvent?.(e);
+
+  const handlers = opts.handlers ?? ALL_TOOLS;
+  const artifacts = new ArtifactStore(path.join(dir, 'artifacts'), runId);
+  const transcriptFile = path.join(dir, 'transcript.jsonl');
+
+  // --- run start: five decisions, in order, none requiring model judgement ---
+
+  // 1. Route.
+  const decision = route(
+    opts.request,
+    opts.registry,
+    profile,
+    opts.skillOverride,
+    opts.config.network.enabled,
+  );
+  const outcome = opts.registry.skill(decision.outcomeId);
+  logger.info('run.route', { outcome: outcome.id, version: outcome.version, reason: decision.reason });
+  emit({ type: 'route', message: `${outcome.id} v${outcome.version} (${decision.reason})` });
+
+  // 2 + 3. Registry is already bootstrapped; load the essential skills for this stage.
+  let stage: Stage = 'intake';
+  let skills = loadSkills(opts.registry, outcome, stage, opts.request);
+
+  // Memory composition (paper §5) happens before the first prompt, not lazily.
+  const composed = await opts.memory.compose(opts.request, runId);
+  const persona = await opts.memory.persona.get();
+  const conservative = persona.runCount < opts.config.coldStart.conservativeRuns;
+  emit({
+    type: 'compose',
+    message: `${skills.length} skills, memory layers: ${
+      ['org-context', 'persona', 'takeaways', 'lessons']
+        .filter((l) => !composed.emptyLayers.includes(l))
+        .join(', ') || 'none yet'
+    }${conservative ? ' · conservative profile' : ''}`,
+  });
+
+  // 5. Allowlist: intersection, never union.
+  const { allowlist, dropped } = buildAllowlist(outcome, handlers, opts.config, profile);
+  if (dropped.length > 0) {
+    logger.info('run.allowlist.dropped', { dropped });
+    emit({
+      type: 'note',
+      message: `not available: ${dropped.map((d) => `${d.tool} (${d.why})`).join(', ')}`,
+    });
+  }
+
+  const stepBudget = Math.min(
+    outcome.stepBudget ?? opts.config.limits.stepBudget,
+    opts.config.limits.stepBudget * 2,
+  );
+
+  const sandboxDescriptors: string[] = [];
+  const ctx: ToolContext = {
+    runId,
+    workspaceSlug: slug,
+    workspaceRoot: opts.workspaceRoot,
+    profile,
+    stage,
+    config: opts.config,
+    guard: new PathGuard([opts.workspaceRoot, hatsHome()]),
+    artifacts,
+    logger,
+    memory: opts.memory,
+    ...(opts.documents ? { documents: opts.documents } : {}),
+    ...(opts.signal ? { signal: opts.signal } : {}),
+    ask:
+      opts.ask ??
+      (async (r) => {
+        throw new HatsError('CLARIFICATION_REQUIRED', r.question, { options: r.options ?? [] });
+      }),
+    approve: opts.approve ?? (async () => false),
+    ...(opts.trigger ? { unattended: true } : {}),
+    recordTaskDescriptor: (d) => sandboxDescriptors.push(d),
+  };
+
+  const executor = new Executor(toolRegistry(handlers), ctx);
+  const messages: Message[] = [...(opts.history ?? []), { role: 'user', content: opts.request }];
+  const observations: ToolObservation[] = [];
+  const modelsUsed = new Set<string>();
+  const usage = { inputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0 };
+
+  let step = 0;
+  let discoveryCount = 0;
+  let planned = false;
+  let recoveries = 0;
+  let emptyTurns = 0;
+  let protocolDowngraded = false;
+  let reviewVerdict: { role: string; verdict: string; detail: string } | undefined;
+  /** The exact text handed to the reviewer, so a PASS delivers it verbatim. */
+  let draftUnderReview = '';
+  /**
+   * A review has been asked for and not yet answered. Tracked rather than inferred from
+   * the stage, because a reviewer that calls a tool (check_consistency, say) advances the
+   * stage back to `act`, and the verdict then arrives in a step that no longer looks like
+   * a review — so it gets read as a fresh draft and reviewed again, forever.
+   * [Seen in a live scheduled run, 2026-08-14.]
+   */
+  let awaitingReview = false;
+  let gateFindings: GateFinding[] = [];
+  let answer = '';
+  let ok = false;
+  let pendingQuestion: { question: string; options?: string[] } | undefined;
+
+  const record = async (m: Message) => {
+    messages.push(m);
+    await appendJsonl(transcriptFile, { ts: utcStamp(), ...m });
+  };
+
+  try {
+    while (step < stepBudget) {
+      step++;
+      const exhausted = step >= stepBudget;
+      const lastText = lastAssistantText(messages);
+      const lastToolNames = observations.slice(-3).map((o) => o.tool);
+
+      const reviewPass: 'guardian' | 'critic' | undefined =
+        (stage === 'verify' || awaitingReview) && outcome.review !== 'none' && !reviewVerdict
+          ? outcome.review
+          : undefined;
+
+      const hat = selectHat(opts.registry, {
+        stage,
+        step,
+        request: opts.request,
+        lastText,
+        lastToolNames,
+        exhausted,
+        ...(reviewPass ? { reviewPass } : {}),
+        multiStep: outcome.stages.includes('plan'),
+      });
+      if (hat.skill) {
+        logger.info('run.hat', { role: hat.skill.role, reason: hat.reason, step, stage });
+        emit({ type: 'hat', message: `${hat.skill.role} — ${hat.reason}` });
+      }
+
+      // Per-step composition in miniature (paper §2.6.4).
+      skills = loadSkills(opts.registry, outcome, stage, opts.request);
+      const stepAllowlist = buildAllowlist(
+        outcome,
+        handlers,
+        opts.config,
+        profile,
+        hat.skill,
+        hat.deterministic,
+      ).allowlist;
+      const rules = opts.registry.rulesInScope({
+        stage,
+        tools: [...stepAllowlist],
+        profile,
+        outcome: outcome.id,
+      });
+
+      const systemParts = buildSystemParts({
+        skills,
+        ...(hat.skill ? { hat: hat.skill } : {}),
+        rules,
+        memoryBlock: composed.block,
+        workspaceRoot: opts.workspaceRoot,
+        profile,
+        networkEnabled: opts.config.network.enabled,
+        stage,
+        stepsLeft: stepBudget - step,
+        conservative,
+      });
+
+      const system = systemParts.full;
+      const contextChars = system.length + messages.reduce((a, m) => a + m.content.length, 0);
+      const tier = routeTier({
+        stage,
+        ...(hat.skill ? { hat: hat.skill } : {}),
+        outcome,
+        contextChars,
+        budgetChars: opts.config.limits.contextCharBudget,
+      });
+      const bound = opts.pool.resolve(tier.tier);
+      modelsUsed.add(`${bound.providerId}/${bound.model}`);
+
+      const visible = executor.visibleTools(stepAllowlist);
+      logger.info('run.step', {
+        step,
+        stage,
+        tier: tier.tier,
+        tierReason: tier.reason,
+        model: `${bound.providerId}/${bound.model}`,
+        contextChars,
+        tools: visible.length,
+      });
+      emit({
+        type: 'step',
+        message: `step ${step}/${stepBudget} · ${stage} · ${tier.tier} (${bound.providerId}/${bound.model})`,
+        data: { step, stage, tier: tier.tier },
+      });
+
+      const response = await bound.provider.chat({
+        model: bound.model,
+        system,
+        systemParts: { stable: systemParts.stable, volatile: systemParts.volatile },
+        messages,
+        tools: toSchemas(visible),
+        temperature: stage === 'deliver' || stage === 'verify' ? 0.2 : 0.3,
+        ...(opts.signal ? { signal: opts.signal } : {}),
+      });
+
+      usage.inputTokens += response.usage.inputTokens ?? 0;
+      usage.outputTokens += response.usage.outputTokens ?? 0;
+      usage.cacheWriteTokens += response.usage.cacheWriteTokens ?? 0;
+      usage.cacheReadTokens += response.usage.cacheReadTokens ?? 0;
+      if (response.protocolUsed === 'text') {
+        if (!protocolDowngraded) {
+          emit({
+            type: 'note',
+            message: `${bound.model} has no native tool calling — using the text protocol (less reliable)`,
+          });
+        }
+        protocolDowngraded = true;
+      }
+
+      await record({
+        role: 'assistant',
+        content: response.text,
+        ...(response.toolCalls.length > 0 ? { toolCalls: response.toolCalls } : {}),
+      });
+
+      // --- acting ---
+      if (response.toolCalls.length > 0) {
+        const limit = opts.config.limits.maxToolCallsPerStep;
+        const calls = response.toolCalls.slice(0, limit);
+        for (const call of calls) {
+          ctx.stage = stage;
+          const observation = await executeCall(executor, call, stepAllowlist, emit);
+          observations.push(observation);
+          if (DISCOVERY_TOOLS.has(call.name) && observation.ok) discoveryCount++;
+          await record({
+            role: 'tool',
+            content: observation.summary,
+            toolCallId: call.id,
+            name: call.name,
+          });
+        }
+
+        // Every tool call the model made needs an answer, including the ones over the
+        // per-step limit. Recording the assistant turn with eight tool_use blocks and
+        // replying with four tool_results makes Anthropic reject the *next* request
+        // outright — "tool_use ids were found without tool_result blocks" — and the run
+        // dies mid-way with nothing delivered. Declining a call is a legitimate answer to
+        // it; silence is not. [Seen in a live panel run, 2026-08-14.]
+        for (const skipped of response.toolCalls.slice(limit)) {
+          emit({
+            type: 'note',
+            message: `${skipped.name} was not run — ${limit} tool calls per step is the limit`,
+          });
+          await record({
+            role: 'tool',
+            content:
+              `Not run: you requested ${response.toolCalls.length} tool calls in one step and the ` +
+              `limit is ${limit}. Nothing failed — ask for this one again in the next step if you ` +
+              `still need it.`,
+            toolCallId: skipped.id,
+            name: skipped.name,
+          });
+        }
+        const next = advanceStage(stage, {
+          usedTools: true,
+          discoveryCount,
+          hasPlanStage: outcome.stages.includes('plan'),
+          planned,
+        });
+        if (next === 'plan') planned = true;
+        if (next !== stage) {
+          logger.info('run.stage', { from: stage, to: next });
+          emit({ type: 'stage', message: `${stage} -> ${next}` });
+          stage = next;
+        }
+        continue;
+      }
+
+      // --- no tool calls: the model believes it is done ---
+      const draft = response.text.trim();
+
+      // An empty turn is not an answer. Small local models produce these; delivering one
+      // would ship a disclosure block attached to nothing.
+      if (!draft) {
+        emptyTurns++;
+        logger.warn('run.empty_turn', { step, emptyTurns });
+        if (emptyTurns > 2) {
+          emit({ type: 'note', message: 'the model returned nothing three times — stopping' });
+          break;
+        }
+        await record({
+          role: 'user',
+          content:
+            'You replied with nothing. Either call one of the tools you were given, or write the answer in plain text.',
+        });
+        continue;
+      }
+
+      if (reviewPass) {
+        awaitingReview = false;
+        reviewVerdict = parseVerdict(reviewPass, draft);
+        logger.info('run.review', { role: reviewPass, verdict: reviewVerdict.verdict });
+        emit({ type: 'review', message: `${reviewPass}: ${reviewVerdict.verdict}` });
+        if (reviewVerdict.verdict !== 'PASS') {
+          await record({
+            role: 'user',
+            content: `The ${reviewPass} found problems:\n${reviewVerdict.detail}\n\nAddress them and produce the final answer.`,
+          });
+          stage = 'act';
+          // The corrected draft is a different draft: it has to be reviewed again.
+          // Keeping the stale FAIL would block delivery for the rest of the run no
+          // matter what the model produced. [Found by a real run, 2026-08-14.]
+          reviewVerdict = undefined;
+          continue;
+        }
+        // Review passed; deliver the draft the review was actually about.
+        const prior = draftUnderReview || lastAssistantTextBefore(messages, draft);
+        gateFindings = runVerificationGates({
+          draft: prior,
+          artifacts: artifacts.all(),
+          reviewRequired: outcome.review,
+          reviewVerdict,
+          usedTools: observations.length > 0,
+        });
+        const outcomeOfGates = await settle(prior, gateFindings, recoveries, record, emit, logger);
+        if (outcomeOfGates.retry) {
+          recoveries++;
+          stage = 'act';
+          continue;
+        }
+        answer = outcomeOfGates.answer;
+        ok = true;
+        stage = 'deliver';
+        break;
+      }
+
+      if (stage !== 'verify') {
+        stage = 'verify';
+        logger.info('run.stage', { from: 'act', to: 'verify' });
+        emit({ type: 'stage', message: `act -> verify` });
+      }
+
+      gateFindings = runVerificationGates({
+        draft,
+        artifacts: artifacts.all(),
+        reviewRequired: outcome.review,
+        ...(reviewVerdict ? { reviewVerdict } : {}),
+        usedTools: observations.length > 0,
+      });
+
+      const needsReview = outcome.review !== 'none' && !reviewVerdict && !awaitingReview;
+      if (needsReview) {
+        awaitingReview = true;
+        // Remember exactly what is being reviewed. Recovering it afterwards by scanning
+        // backwards for "the last assistant text that is not the verdict" guesses wrong as
+        // soon as the model emits two verdicts, or a line of filler, between draft and
+        // verdict — and then ships that instead of the answer.
+        // [Seen in a live scheduled run, 2026-08-14.]
+        draftUnderReview = draft;
+        await record({
+          role: 'user',
+          content: `Before this is delivered it must pass the ${outcome.review} check. Review the draft above against your ${outcome.review} playbook and reply with the verdict.`,
+        });
+        continue;
+      }
+
+      const settled = await settle(draft, gateFindings, recoveries, record, emit, logger);
+      if (settled.retry) {
+        recoveries++;
+        stage = 'act';
+        continue;
+      }
+      answer = settled.answer;
+      ok = true;
+      stage = 'deliver';
+      break;
+    }
+
+    // Budget exhausted without an answer: the reflector is terminal authority (paper §2.2).
+    if (!answer) {
+      emit({ type: 'note', message: 'step budget exhausted — reflector pass' });
+      answer = await reflectorPass({
+        registry: opts.registry,
+        pool: opts.pool,
+        config: opts.config,
+        outcome,
+        messages,
+        record,
+        logger,
+        workspaceRoot: opts.workspaceRoot,
+        profile,
+        memoryBlock: composed.block,
+        ...(opts.signal ? { signal: opts.signal } : {}),
+      });
+      ok = false;
+    }
+  } catch (e) {
+    const err = toHatsError(e);
+    if (err.code === 'CLARIFICATION_REQUIRED') {
+      pendingQuestion = {
+        question: err.message,
+        options: (err.context['options'] as string[]) ?? [],
+      };
+      answer = err.message;
+      logger.info('run.paused', { question: err.message });
+      emit({ type: 'note', message: 'paused for clarification' });
+    } else {
+      logger.error('run.failed', { code: err.code, message: err.message });
+      throw err;
+    }
+  }
+
+  const result: RunResult = {
+    runId,
+    ok,
+    answer,
+    stage,
+    steps: step,
+    stepBudget,
+    outcomeId: outcome.id,
+    profile,
+    gateFindings,
+    observations,
+    messages,
+    artifactCount: artifacts.all().length,
+    usage,
+    modelsUsed: [...modelsUsed],
+    protocolDowngraded,
+    sandboxDescriptors,
+    ...(pendingQuestion ? { pendingQuestion } : {}),
+    runDir: dir,
+  };
+
+  await writeJsonAtomic(path.join(dir, 'run.json'), {
+    runId,
+    startedAt: new Date(started).toISOString(),
+    finishedAt: utcStamp(),
+    durationMs: Date.now() - started,
+    request: opts.request,
+    workspace: { slug, root: opts.workspaceRoot },
+    profile,
+    // ADR-0007 §6: who caused a run with nobody watching. Absent means a person ran it.
+    ...(opts.trigger ? { trigger: opts.trigger } : {}),
+    route: decision,
+    // Flat, not just nested inside `route` — analytics reads this field, and without it
+    // every run showed up as an unknown outcome. [Seen in a live run record, 2026-08-14.]
+    outcomeId: outcome.id,
+    // Which version of which skill was loaded is the first question when a run misbehaves.
+    skillVersions: Object.fromEntries(skills.map((s) => [s.id, s.version])),
+    ruleVersions: Object.fromEntries(opts.registry.rules.map((r) => [r.id, r.version])),
+    allowlist: [...allowlist],
+    droppedTools: dropped,
+    steps: step,
+    stepBudget,
+    stage,
+    ok,
+    answer,
+    gateFindings,
+    observations,
+    usage,
+    modelsUsed: [...modelsUsed],
+    protocolDowngraded,
+    sandboxDescriptors,
+    lessonIds: composed.lessonIds,
+    conservative,
+  });
+  await logger.flush();
+
+  emit({ type: 'answer', message: answer });
+  return result;
+}
+
+async function executeCall(
+  executor: Executor,
+  call: ToolCall,
+  allowlist: Set<string>,
+  emit: (e: RunEvent) => void,
+): Promise<ToolObservation> {
+  emit({ type: 'tool', message: `${call.name}(${summariseArgs(call.args)})`, data: { tool: call.name } });
+  const observation = await executor.execute(call, { allowlist });
+  emit({
+    type: 'tool',
+    message: `  -> ${observation.ok ? 'ok' : 'denied'} ${firstLine(observation.summary)}`,
+    data: { tool: call.name, ok: observation.ok },
+  });
+  return observation;
+}
+
+/**
+ * The delivery gate. Blocks once and forces a correction; after that the answer ships
+ * with the gap disclosed rather than retrying forever (paper's bounded recovery).
+ */
+async function settle(
+  draft: string,
+  findings: GateFinding[],
+  recoveries: number,
+  record: (m: Message) => Promise<void>,
+  emit: (e: RunEvent) => void,
+  logger: Logger,
+): Promise<{ retry: boolean; answer: string }> {
+  const failed = findings.filter((f) => !f.passed);
+  for (const f of findings) {
+    logger.info('run.gate', { gate: f.gate, ruleId: f.ruleId, passed: f.passed, detail: f.detail });
+  }
+  if (failed.length === 0) return { retry: false, answer: draft };
+
+  emit({
+    type: 'gate',
+    message: `blocked: ${failed.map((f) => `${f.ruleId} (${f.detail})`).join('; ')}`,
+  });
+
+  if (recoveries < MAX_GATE_RECOVERIES) {
+    await record({ role: 'user', content: renderGateFeedback(findings) });
+    return { retry: true, answer: '' };
+  }
+  emit({ type: 'gate', message: 'recovery spent — delivering with the gap disclosed' });
+  return { retry: false, answer: draft + renderGateDisclosure(findings) };
+}
+
+async function reflectorPass(input: {
+  registry: Registry;
+  pool: ProviderPool;
+  config: HatsConfig;
+  outcome: Skill;
+  messages: Message[];
+  record: (m: Message) => Promise<void>;
+  logger: Logger;
+  workspaceRoot: string;
+  profile: Profile;
+  memoryBlock: string;
+  signal?: AbortSignal;
+}): Promise<string> {
+  const reflector = input.registry.behavioural().find((s) => s.role === 'reflector');
+  const bound = input.pool.resolve('frontier');
+  const system = buildSystemPrompt({
+    skills: [input.outcome],
+    ...(reflector ? { hat: reflector } : {}),
+    rules: input.registry.rulesInScope({ stage: 'deliver', profile: input.profile }),
+    memoryBlock: input.memoryBlock,
+    workspaceRoot: input.workspaceRoot,
+    profile: input.profile,
+    stage: 'deliver',
+    stepsLeft: 0,
+    conservative: false,
+  });
+  const response = await bound.provider.chat({
+    model: bound.model,
+    system,
+    messages: [
+      ...input.messages,
+      {
+        role: 'user',
+        content:
+          'The step budget is spent. Deliver the best answer the evidence above supports, state plainly what remains unknown and why, and do not request more tools.',
+      },
+    ],
+    tools: [],
+    temperature: 0.2,
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+  input.logger.info('run.reflector', { chars: response.text.length });
+  await input.record({ role: 'assistant', content: response.text });
+  return response.text.trim();
+}
+
+export function advanceStage(
+  prev: Stage,
+  o: { usedTools: boolean; discoveryCount: number; hasPlanStage: boolean; planned: boolean },
+): Stage {
+  if (!o.usedTools) return 'verify';
+  switch (prev) {
+    case 'intake':
+      return 'discover';
+    case 'discover':
+      return o.hasPlanStage && !o.planned && o.discoveryCount >= 1 ? 'plan' : 'act';
+    case 'plan':
+      return 'act';
+    case 'verify':
+      return 'act';
+    default:
+      return prev;
+  }
+}
+
+function parseVerdict(role: string, text: string): { role: string; verdict: string; detail: string } {
+  const m = /\b(PASS|FAIL|REVISE|STOP|DELIVER)\b/i.exec(text);
+  const raw = (m?.[1] ?? '').toUpperCase();
+  const verdict = raw === 'DELIVER' ? 'PASS' : raw || (/(problem|wrong|missing|unsupported)/i.test(text) ? 'FAIL' : 'PASS');
+  return { role, verdict, detail: text };
+}
+
+function lastAssistantText(messages: Message[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.role === 'assistant' && m.content.trim()) return m.content;
+  }
+  return '';
+}
+
+/**
+ * The draft the review was about: the last assistant text that is not itself a verdict.
+ *
+ * Excluding only the exact verdict string is not enough. A review that fails once sends the
+ * model back to `act`, and if it answers with another verdict rather than a new draft, the
+ * next PASS delivers *that* earlier verdict as the answer — the user gets "PASS. The draft
+ * is ready to deliver" instead of the draft. [Seen in a live scheduled run, 2026-08-14.]
+ */
+function lastAssistantTextBefore(messages: Message[], exclude: string): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.role !== 'assistant') continue;
+    const text = m.content.trim();
+    if (!text || text === exclude.trim() || looksLikeVerdict(text)) continue;
+    return m.content;
+  }
+  return exclude;
+}
+
+/**
+ * Verdict-shaped: the first non-empty line is just the verdict word, allowing for the
+ * bold and punctuation models add. Deliberately narrow — a real answer that merely
+ * contains "PASS" further down must not be mistaken for one.
+ */
+function looksLikeVerdict(text: string): boolean {
+  const first = text.split('\n').find((l) => l.trim()) ?? '';
+  return /^[*_#\s]*(PASS|FAIL|REVISE|STOP|DELIVER)[*_\s.:!—-]*$/i.test(first);
+}
+
+function summariseArgs(args: Record<string, unknown>): string {
+  const parts = Object.entries(args ?? {}).map(([k, v]) => {
+    const s = typeof v === 'string' ? v : JSON.stringify(v);
+    return `${k}=${(s ?? '').slice(0, 40)}`;
+  });
+  return parts.join(', ').slice(0, 120);
+}
+
+function firstLine(text: string): string {
+  const line = text.split('\n')[0] ?? '';
+  return line.slice(0, 140);
+}
+
+export { isHatsError };
+
+/** Exposed for the regression test; not part of the runtime surface. */
+export { looksLikeVerdict as looksLikeVerdictForTest };

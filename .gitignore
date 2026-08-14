@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+
+# Local runtime state
+.hats-test-home/
+.hats/
+
+# Internal — working notes, agent rules and design records. Not published.
+CLAUDE.md
+docs/
+.claude/

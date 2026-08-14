@@ -1,0 +1,43 @@
+{
+  "name": "klair-hats",
+  "version": "0.1.0",
+  "description": "One agent, many hats. A local agent runtime where Skills, Rules and Tools are the architecture — with a sandbox, layered memory, MCP, and self-extension you supervise. Runs on Ollama, Claude, OpenAI, Gemini, DeepSeek, Qwen, Kimi, GLM.",
+  "type": "module",
+  "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "bin": {
+    "hats": "dist/src/cli/main.js"
+  },
+  "main": "dist/src/index.js",
+  "files": [
+    "dist/src",
+    "packs",
+    "runtime",
+    "README.md",
+    "docs",
+    "assets"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
+    "hats": "node dist/src/cli/main.js"
+  },
+  "keywords": [
+    "agent",
+    "llm",
+    "ollama",
+    "local-first",
+    "skills",
+    "tools",
+    "memory",
+    "cli"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.9.3"
+  },
+  "author": "Klair Technology Private Limited",
+  "homepage": "https://klairtech.com"
+}
