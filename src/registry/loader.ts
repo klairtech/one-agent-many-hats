@@ -153,10 +153,24 @@ export class Registry {
   }
 }
 
+/** Frontmatter `version:`, read cheaply without parsing the whole document. */
+async function fileVersion(file: string): Promise<number> {
+  const raw = await fsp.readFile(file, 'utf8').catch(() => '');
+  const match = /^version:\s*(\d+)\s*$/m.exec(raw.slice(0, 2_000));
+  return match ? Number(match[1]) : 0;
+}
+
 /**
  * Deploy-time sync, paper §4: "deploy syncs the registry; deletes are denied so history
- * accumulates as versions". A file already present in the runtime registry is never
- * overwritten by a pack unless `force` — the user's edits win over the shipped defaults.
+ * accumulates as versions".
+ *
+ * Version decides, not existence. The obvious rule — never overwrite a file that is already
+ * there — sounds like it protects the user's edits, and it does, but it also means a shipped
+ * playbook fix reaches nobody who has ever run the thing: their registry is populated on
+ * first launch and then frozen for good. The only escape was `--force`, which overwrites
+ * everything including the edits. So: copy when the packaged version is *newer* than the
+ * installed one, leave it alone otherwise. A local edit survives every sync until we ship a
+ * genuinely newer playbook, which is the point at which our version should win.
  */
 export async function syncPacks(root = registryDir(), force = false): Promise<string[]> {
   const copied: string[] = [];
@@ -165,7 +179,9 @@ export async function syncPacks(root = registryDir(), force = false): Promise<st
     const to = await ensureDir(path.join(root, kind));
     for (const file of await listFiles(from, '.md')) {
       const target = path.join(to, path.basename(file));
-      if (!force && (await exists(target))) continue;
+      if (!force && (await exists(target))) {
+        if ((await fileVersion(file)) <= (await fileVersion(target))) continue;
+      }
       await fsp.copyFile(file, target);
       copied.push(target);
     }
