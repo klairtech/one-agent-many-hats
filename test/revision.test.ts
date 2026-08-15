@@ -13,6 +13,8 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
+import { DEFAULT_CONFIG } from '../src/core/config.js';
+import { runAutoPromotion } from '../src/engine/autonomy.js';
 import { parseRule, syncPacks } from '../src/registry/loader.js';
 import { promoteProposal, stageProposal } from '../src/registry/proposals.js';
 import { cleanup, tempHome } from './helpers.js';
@@ -109,9 +111,14 @@ test('promoting a revision replaces the playbook and keeps the old version', asy
     const nowVersion = Number(/^version:\s*(\d+)$/m.exec(after)?.[1]);
     assert.ok(nowVersion > wasVersion, `version did not advance: ${wasVersion} -> ${nowVersion}`);
 
-    // The previous text survives, so a revision that turns out badly is revertible.
+    // The previous text survives, so a revision that turns out badly is revertible. This
+    // has to include the *shipped* text: history used to record only versions this code
+    // wrote, so the first revision of a packaged playbook left nothing to go back to —
+    // and the first revision is the one most likely to be wrong.
     const kept = await fsp.readdir(path.join(root, 'versions', 'skills', 'outcome-answer'));
-    assert.ok(kept.length >= 1, 'no version history was written');
+    assert.ok(kept.includes(`v${wasVersion}.md`), `the replaced text was not kept: ${kept.join(', ')}`);
+    assert.ok(kept.includes(`v${nowVersion}.md`), `the new text was not kept: ${kept.join(', ')}`);
+    assert.equal(await fsp.readFile(path.join(root, 'versions', 'skills', 'outcome-answer', `v${wasVersion}.md`), 'utf8'), before);
   } finally {
     await cleanup(home);
   }
@@ -164,6 +171,83 @@ test('a rule revision replaces the shipped rule instead of writing a second one'
     // write a second rule with the same id next to the first — and both then loaded.
     assert.equal((await fsp.readdir(path.join(root, 'rules'))).length, before, 'a duplicate rule was written');
     assert.match(await fsp.readFile(live, 'utf8'), /Narrowed: all-numeric tokens/);
+  } finally {
+    await cleanup(home);
+  }
+});
+
+test('a revision promotes on first sighting; a brand new playbook still has to recur', async () => {
+  const home = await tempHome();
+  try {
+    const root = path.join(home, 'registry');
+    await syncPacks(root);
+    const config = {
+      ...DEFAULT_CONFIG,
+      autonomy: { level: 'adaptive' as const, promoteAfterOccurrences: 3, announce: true },
+    };
+
+    // A revision: same id as a live playbook, seen once.
+    const live = path.join(root, 'skills', 'outcome-answer.md');
+    const revised = `${await fsp.readFile(live, 'utf8')}\n\nRevised: name the strategies you tried.\n`;
+    await stageProposal(
+      { kind: 'skill', title: 'answer — name what you tried', rationale: 'reported not-found without saying what', evidence: ['run:a'], content: revised },
+      root,
+    );
+
+    // Something new: seen once, and it should wait for two more.
+    await stageProposal(
+      {
+        kind: 'skill',
+        title: 'brand new playbook',
+        rationale: 'did this once',
+        evidence: ['run:a'],
+        content: '---\nid: outcome/novel\nkind: outcome\nversion: 1\ndescription: new\ntools: []\nstages: [act]\nreview: none\n---\n\n# Novel\n',
+      },
+      root,
+    );
+
+    const outcome = await runAutoPromotion(config);
+    const promoted = outcome.promoted.map((p) => p.proposal.title);
+    const waiting = outcome.waiting.map((w) => w.proposal.title);
+
+    // The point: a correct fix to a playbook that is already wrong should not have to wait
+    // for the same playbook to misfire twice more.
+    assert.ok(promoted.includes('answer — name what you tried'), `revision did not land: ${JSON.stringify(outcome.notes)}`);
+    assert.ok(waiting.includes('brand new playbook'), 'a new playbook skipped the evidence gate');
+    assert.match(await fsp.readFile(live, 'utf8'), /Revised: name the strategies/);
+  } finally {
+    await cleanup(home);
+  }
+});
+
+test('a revision that weakens a rule is still refused, first sighting or not', async () => {
+  const home = await tempHome();
+  try {
+    const root = path.join(home, 'registry');
+    await syncPacks(root);
+    const config = {
+      ...DEFAULT_CONFIG,
+      autonomy: { level: 'self-extending' as const, promoteAfterOccurrences: 3, announce: true },
+    };
+
+    const live = path.join(root, 'rules', 'no-invented-numbers.md');
+    const before = await fsp.readFile(live, 'utf8');
+    await stageProposal(
+      {
+        kind: 'rule',
+        title: 'soften the numbers gate',
+        rationale: 'noisy',
+        evidence: ['run:a'],
+        content: before.replace(/^strength: gate$/m, 'strength: prompt'),
+      },
+      root,
+    );
+
+    const outcome = await runAutoPromotion(config);
+    assert.equal(outcome.promoted.length, 0, 'a weakening revision was promoted');
+    // Promoting on first sighting must not become a way around the enforcement guard.
+    assert.ok(outcome.notes.some((n) => /never demoted|lowers it/.test(n.detail)), JSON.stringify(outcome.notes));
+    assert.equal(await fsp.readFile(live, 'utf8'), before);
   } finally {
     await cleanup(home);
   }

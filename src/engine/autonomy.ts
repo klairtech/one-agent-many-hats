@@ -19,7 +19,7 @@
 
 import type { Autonomy, HatsConfig } from '../core/config.js';
 import { Logger, nullLogger } from '../core/logger.js';
-import { listProposals, promoteProposal, type Proposal } from '../registry/proposals.js';
+import { isRevision, listProposals, promoteProposal, type Proposal } from '../registry/proposals.js';
 
 const RUNGS: Array<Autonomy['level']> = ['supervised', 'adaptive', 'self-healing', 'self-extending'];
 
@@ -85,6 +85,25 @@ export async function runAutoPromotion(
       result.waiting.push({ proposal, needs: 0 });
       continue;
     }
+
+    // A revision lands on first sighting; a new playbook still has to recur.
+    //
+    // The recurrence threshold asks "has this been needed enough times to be worth adding?"
+    // — the right question for something new, and the wrong one for a fix to something that
+    // already exists and is already wrong. Making a correct one-off correction wait for the
+    // same problem to happen twice more means the agent watches a playbook misfire, knows
+    // exactly how to fix it, and is told to come back after it has misfired again.
+    //
+    // The safety argument is different too. A new playbook is unbounded; a revision targets
+    // one existing entry, keeps its id, is version-stamped with the old text retained, and
+    // for rules cannot weaken strength or enforcement (see registry/revision.ts). The blast
+    // radius is one file that was already there and is one `hats registry` away from being
+    // reverted.
+    if (await isRevision(proposal)) {
+      await attempt(proposal);
+      continue;
+    }
+
     if (proposal.occurrences < config.autonomy.promoteAfterOccurrences) {
       result.waiting.push({
         proposal,

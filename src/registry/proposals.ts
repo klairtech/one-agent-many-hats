@@ -47,6 +47,12 @@ export interface Proposal {
    * Promotion installs this; without it a tool proposal is still a contract for a person.
    */
   implementation?: { tool: import('../tools/generated/store.js').GeneratedTool; code: string };
+  /**
+   * The playbook id this claims to replace, when the agent said so. Recorded for the record
+   * and the panel — never used to decide anything, because `isRevision` can establish the
+   * same fact from the registry and does not depend on the model remembering to declare it.
+   */
+  revises?: string;
 }
 
 export function proposalsDir(kind: ProposalKind, root = registryDir()): string {
@@ -227,6 +233,20 @@ export async function promoteProposal(
 
   const versionFile = path.join(root, 'versions', dir, slugify(parsed.id), `v${nextVersion}.md`);
   await ensureDir(path.dirname(versionFile));
+
+  // Snapshot what is being replaced, if nothing has snapshotted it yet.
+  //
+  // History only ever recorded versions this code wrote, so a playbook that shipped in the
+  // pack and was then revised had exactly one entry — the *new* text. "The previous version
+  // is kept, so a bad revision can be reverted" was therefore false for the first revision
+  // of every shipped playbook, which is precisely the revision most likely to be wrong.
+  if (currentVersion > 0) {
+    const previous = path.join(path.dirname(versionFile), `v${currentVersion}.md`);
+    if (!(await exists(previous))) {
+      await writeTextAtomic(previous, await fsp.readFile(live, 'utf8'));
+    }
+  }
+
   await writeTextAtomic(versionFile, content);
   await writeTextAtomic(live, content);
   await setProposalStatus(id, 'promoted', root);
@@ -262,6 +282,21 @@ function setVersionInFrontmatter(content: string, version: number): string {
     return content.replace(/\nversion:\s*\d+/, `\nversion: ${version}`);
   }
   return content.replace(/^---\n/, `---\nversion: ${version}\n`);
+}
+
+/**
+ * Is this proposal replacing a playbook that already exists?
+ *
+ * Answered from the registry rather than from what the proposal claims. A revision is a
+ * proposal whose document declares an id that is already live — that is what makes
+ * promotion overwrite one file instead of adding another, so it is also the honest
+ * definition, whether or not the agent passed `revises`.
+ */
+export async function isRevision(proposal: Proposal, root = registryDir()): Promise<boolean> {
+  if (proposal.kind === 'tool') return false;
+  const id = /^id:\s*(.+)$/m.exec(proposal.content)?.[1]?.trim();
+  if (!id) return false;
+  return (await findLiveFile(root, proposal.kind === 'skill' ? 'skills' : 'rules', id)) !== null;
 }
 
 /** The file whose frontmatter declares this id, if one is already live. */

@@ -135,6 +135,7 @@ async function stage(
     evidence: [`run:${ctx.runId}`],
     content,
     createdByRun: ctx.runId,
+    ...(revises ? { revises } : {}),
   });
 
   return {
