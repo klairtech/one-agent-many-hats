@@ -107,6 +107,16 @@ export interface ToolContext {
   budgetExhausted?: boolean;
   /** Task descriptors from sandbox runs, mined later into tool proposals (paper §4). */
   recordTaskDescriptor(descriptor: string): void;
+  /**
+   * ADR-0011: make a tool the agent just wrote callable in *this* run.
+   *
+   * Without it, build_tool is close to useless in the run that needs it: the agent works
+   * out what is missing, writes it, and then hits "no tool named athena_query exists" —
+   * which is what happened on the first live run of this feature. The skill listed
+   * `build_tool`, and granting the use of what that produced is the point of having listed
+   * it. Absent when the surface has no registry to extend, so callers must handle undefined.
+   */
+  installTool?(handler: ToolHandler): void;
 }
 
 export interface ToolHandler {

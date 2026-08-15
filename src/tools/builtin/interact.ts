@@ -19,13 +19,13 @@ export const askUser: ToolHandler = {
         question: { type: 'string', description: 'One specific question.' },
         options: {
           type: 'array',
-          description: 'Two to four concrete choices, if the question is a choice.',
+          description: 'Two to four concrete choices, only when the set is genuinely closed. Do not use options or a select field for an open question like which system, which vendor or which host — a menu claims your list is complete, and the person whose answer is not on it has no way to tell you. Use a text field for those.',
           items: { type: 'string' },
         },
         fields: {
           type: 'array',
           description:
-            'Ask for several values at once as a form. Each field: name, label, type (text, number, select, secret, boolean), and options for a select. Use type "secret" for anything sensitive — its value is stored securely and you receive only a masked hint, never the value itself.',
+            'Ask for several values at once as a form. Each field: name, label, type (text, number, select, secret, boolean), and options for a select. Prefer text; use select only where the options are exhaustive and you would behave differently for each. Use type "secret" for anything sensitive — its value is stored securely and you receive only a masked hint, never the value itself.',
           items: {
             type: 'object',
             properties: {

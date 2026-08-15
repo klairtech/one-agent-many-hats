@@ -202,7 +202,28 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
     recordTaskDescriptor: (d) => sandboxDescriptors.push(d),
   };
 
-  const executor = new Executor(toolRegistry(handlers), ctx);
+  // Held so a tool the agent writes mid-run can join both, which is the only way
+  // build_tool is useful in the run that discovered the gap (ADR-0011).
+  const liveRegistry = toolRegistry(handlers);
+  /**
+   * Tools written during this run. Kept separately because the per-step allowlist is
+   * recomputed from the *skill's* declared list, and a tool that did not exist when the
+   * skill was written can never appear in it — so adding it to the run-level set was
+   * silently discarded on the very next step, and the agent watched its own new tool come
+   * back as "not permitted by the active skill".
+   *
+   * Unioned in rather than intersected: this is a real widening of the skill's surface, and
+   * it is the one the skill asked for when it listed `build_tool`.
+   */
+  const selfBuilt = new Set<string>();
+  ctx.installTool = (handler) => {
+    liveRegistry.set(handler.spec.name, handler);
+    selfBuilt.add(handler.spec.name);
+    allowlist.add(handler.spec.name);
+    logger.warn('run.tool.installed', { tool: handler.spec.name });
+    emit({ type: 'note', message: `${handler.spec.name} is now callable in this run` });
+  };
+  const executor = new Executor(liveRegistry, ctx);
   const messages: Message[] = [...(opts.history ?? []), { role: 'user', content: opts.request }];
   const observations: ToolObservation[] = [];
   const modelsUsed = new Set<string>();
@@ -280,6 +301,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
         hat.skill,
         hat.deterministic,
       ).allowlist;
+      for (const name of selfBuilt) stepAllowlist.add(name);
       const rules = opts.registry.rulesInScope({
         stage,
         tools: [...stepAllowlist],

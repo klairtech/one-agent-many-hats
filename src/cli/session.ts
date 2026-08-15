@@ -19,6 +19,7 @@ import { knownEnforcementPoints } from '../engine/gates.js';
 import { Registry } from '../registry/loader.js';
 import { DocumentIndex } from '../rag/index.js';
 import { ALL_TOOLS } from '../tools/index.js';
+import { loadGeneratedTools } from '../tools/generated/index.js';
 import type { DocumentAccess, ToolHandler } from '../tools/types.js';
 
 export interface SessionFlags {
@@ -108,6 +109,10 @@ export async function openSession(flags: SessionFlags = {}): Promise<Session> {
     search: (query, limit) => index.search(query, limit, pool.embedder()),
   };
 
+  // ADR-0011: whatever the agent has built for this machine, joined last so a built-in
+  // or an MCP server always wins a name collision.
+  const generated = await loadGeneratedTools([...ALL_TOOLS, ...mcp.handlers], logger);
+
   return {
     config,
     registry,
@@ -117,7 +122,7 @@ export async function openSession(flags: SessionFlags = {}): Promise<Session> {
     slug,
     profile: config.profile,
     logger,
-    handlers: [...ALL_TOOLS, ...mcp.handlers],
+    handlers: [...ALL_TOOLS, ...mcp.handlers, ...generated],
     mcp,
     index,
     documents,
