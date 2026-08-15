@@ -60,6 +60,59 @@ export function completionClaimed(draft: string, observations: ToolObservation[]
   return { ok: true, detail: `${sentences.length} completeness claim(s), no failed tool calls` };
 }
 
+/** Asking the human to hand over values: "please provide", "I need you to supply". */
+const REQUESTS_INPUT =
+  /\b(please (provide|supply|share|enter|give|confirm)|to (proceed|continue|answer|connect)[,:]? (please )?(provide|supply|i (will |would )?need)|i (will |would )?need (you to (provide|supply|give)|the following|access to)|could you (provide|supply|share))\b/i;
+
+/** The vocabulary of a connection. Narrow on purpose — these are not ordinary words. */
+const CONNECTION_DETAIL =
+  /\b(credential|access key|secret key|api[- ]?key|auth token|password|connection string|endpoint|aws region|workgroup|log ?in|sign ?in|profile name|account id|tenant id|client secret)\b/i;
+
+/**
+ * The draft asks the human for connection details in prose, while the tool that asks them
+ * properly sat unused.
+ *
+ * This is the shape that survives every amount of prompting, because it does not feel like
+ * a mistake: the agent has correctly worked out that it needs a key, and correctly says so.
+ * But saying so in the final answer ends the run. The human now has to read a paragraph,
+ * work out which values are wanted, and start again — when `ask_user` with `fields` would
+ * have rendered the form, paused, and continued with the answer in hand.
+ *
+ * It kept happening because the realisation arrives while the agent is *writing the
+ * conclusion*, and at that moment it is composing prose rather than choosing a tool. So the
+ * check runs where the conclusion is checked, and hands it back one step earlier.
+ *
+ * Fires only when all three hold: the draft asks for input, the thing asked for is a
+ * connection detail, and `ask_user` was available and never called. An agent that already
+ * asked and was refused is reporting a fact, not skipping a step.
+ */
+export function askedInProse(
+  draft: string,
+  observations: ToolObservation[],
+  askAvailable: boolean,
+): ClaimCheck {
+  if (!askAvailable) return { ok: true, detail: 'ask_user was not in the allowlist' };
+  if (observations.some((o) => o.tool === 'ask_user')) {
+    return { ok: true, detail: 'the human was asked through ask_user' };
+  }
+  const asks = draft
+    .split(/(?<=[.!?])\s+|\n/)
+    .find((s) => REQUESTS_INPUT.test(s) && CONNECTION_DETAIL.test(s));
+
+  // The list of wanted values is usually bullets *under* the sentence that introduces them,
+  // so a sentence carrying only the request still counts if the vocabulary is nearby.
+  const nearby = REQUESTS_INPUT.test(draft) && CONNECTION_DETAIL.test(draft);
+  if (!asks && !nearby) return { ok: true, detail: 'the answer does not ask for connection details' };
+
+  return {
+    ok: false,
+    detail:
+      `the answer asks the human for connection details in prose ("${(asks ?? '').trim().slice(0, 120)}") ` +
+      `but ask_user was available all run and never called. Asking in the final answer ends the ` +
+      `run and makes them start over.`,
+  };
+}
+
 /**
  * A path that is one keystroke away from a sibling that already exists.
  *

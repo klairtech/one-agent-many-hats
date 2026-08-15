@@ -1,7 +1,7 @@
 ---
 id: outcome/investigate
 kind: outcome
-version: 5
+version: 6
 description: Multi-step investigation of a codebase or directory, ending in a findings report with open questions.
 tools:
   - list_dir
@@ -16,6 +16,7 @@ tools:
   - propose_skill
   - propose_rule
   - propose_tool
+  - build_tool
   - propose_patch
   - web_search
   - schedule_task

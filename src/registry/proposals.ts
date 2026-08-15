@@ -42,6 +42,11 @@ export interface Proposal {
   occurrences: number;
   /** ADR-0010: set when this proposal is a code fix rather than a new capability. */
   patch?: import('./patches.js').Patch;
+  /**
+   * ADR-0011: set when the agent wrote a working tool rather than a description of one.
+   * Promotion installs this; without it a tool proposal is still a contract for a person.
+   */
+  implementation?: { tool: import('../tools/generated/store.js').GeneratedTool; code: string };
 }
 
 export function proposalsDir(kind: ProposalKind, root = registryDir()): string {
@@ -73,6 +78,10 @@ export async function stageProposal(
       occurrences: existing.occurrences + 1,
       evidence: [...new Set([...existing.evidence, ...input.evidence])].slice(0, 50),
       rationale: input.rationale || existing.rationale,
+      // A second attempt at the same tool is usually a *fix* to the first one. Keeping the
+      // original would mean the agent corrects a handler, sees "seen 2 times now", and the
+      // broken version is what eventually installs.
+      ...(input.implementation ? { implementation: input.implementation } : {}),
       updatedAt: now,
     };
     await writeJsonAtomic(file, merged);
@@ -161,11 +170,28 @@ export async function promoteProposal(
       return { proposal, written: proposal.patch.file };
     }
 
+    // ADR-0011: the proposal carries a working handler, so promotion installs it.
+    if (proposal.implementation) {
+      const { installGeneratedTool } = await import('../tools/generated/install.js');
+      const outcome = await installGeneratedTool(proposal.implementation);
+      if (!outcome.installed) {
+        // Left a draft on purpose, same as a refused patch: a tool that did not install is
+        // evidence about the tool, and marking it promoted would hide a thing that is not there.
+        throw new HatsError(
+          'REGISTRY_IMMUTABLE',
+          `the tool did not install at the ${outcome.stage} check: ${outcome.reason}`,
+          { stage: outcome.stage },
+        );
+      }
+      await setProposalStatus(id, 'promoted', root);
+      return { proposal, written: outcome.dir };
+    }
+
     await setProposalStatus(id, 'promoted', root);
     return {
       proposal,
       manual:
-        'Tool proposals require a typed handler in src/tools/builtin/ plus a ToolSpec entry. The proposal body describes the contract; a human writes the code and the gates.',
+        'This tool proposal describes a contract but carries no handler. Use build_tool to write one, or implement it in src/tools/builtin/ with a ToolSpec entry.',
     };
   }
 

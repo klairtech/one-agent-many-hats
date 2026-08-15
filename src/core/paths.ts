@@ -54,6 +54,19 @@ export function registryDir(): string {
   return path.join(hatsHome(), 'registry');
 }
 
+/**
+ * ADR-0011: tools the agent wrote itself, one directory each.
+ *
+ * Deliberately outside the repository. Nothing an agent generated can end up in a commit
+ * by accident, and revoking a tool is deleting a directory rather than editing source.
+ */
+export function generatedToolsDir(): string {
+  // One place on the device, shared by every workspace. A connector is a capability of this
+  // machine rather than of one project — having built a tool for an internal API once, the
+  // agent should have it everywhere, not rebuild it per directory.
+  return path.join(hatsHome(), 'tools');
+}
+
 /** One JSON file per schedule, so the panel and the daemon never write the same file. */
 export function schedulesDir(): string {
   return path.join(hatsHome(), 'schedules');

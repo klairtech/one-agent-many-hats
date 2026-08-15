@@ -1,46 +1,87 @@
 /**
- * Autonomy: how much of self-extension happens without a human (ADR-0006).
+ * Autonomy: how much of self-extension happens without a human (ADR-0006, 0010, 0011).
  *
- * The line is drawn between *recomposition* and *capability*. A skill or a rule can only
- * ever rearrange tools that already exist and constraints already in force — promoting one
- * cannot let the agent do anything it could not already do. A tool is different in kind:
- * it is new capability, new code, a new way to touch the world. So skills and rules can
- * earn their way in under evidence; tools cannot, at any autonomy level.
+ * The original line was drawn between *recomposition* and *capability*. A skill or a rule
+ * can only rearrange tools that already exist, so promoting one cannot let the agent do
+ * anything it could not already do; a tool was different in kind, and needed a person.
+ *
+ * ADR-0011 moved that line, because the argument underneath it was never really about
+ * tools. It was about *declarations nothing checked*: a self-written spec could claim
+ * `mutating: false` on a handler that deleted files. A generated tool now runs in a process
+ * started with the flags its own spec earned it, so the claim is enforced before the code
+ * exists. Once the declaration cannot lie, a new tool stops being a different kind of thing.
+ *
+ * The levels are a ladder, not an enum. Each capability names the rung it needs, and every
+ * rung above keeps everything below it — which was a real bug before: `self-healing` was
+ * checked with `!== 'adaptive'`, so raising the level to get patch-repair silently switched
+ * *off* the skill and rule promotion that `adaptive` had been doing.
  */
 
-import type { HatsConfig } from '../core/config.js';
+import type { Autonomy, HatsConfig } from '../core/config.js';
 import { Logger, nullLogger } from '../core/logger.js';
 import { listProposals, promoteProposal, type Proposal } from '../registry/proposals.js';
+
+const RUNGS: Array<Autonomy['level']> = ['supervised', 'adaptive', 'self-healing', 'self-extending'];
+
+export function atLeast(level: Autonomy['level'], required: Autonomy['level']): boolean {
+  return RUNGS.indexOf(level) >= RUNGS.indexOf(required);
+}
 
 export interface AutoPromotion {
   promoted: Array<{ proposal: Proposal; written?: string }>;
   waiting: Array<{ proposal: Proposal; needs: number }>;
   blocked: Proposal[];
+  /** Why something was refused, in words the panel can show without re-deriving them. */
+  notes: Array<{ id: string; detail: string }>;
 }
 
 export async function runAutoPromotion(
   config: HatsConfig,
   logger: Logger = nullLogger,
 ): Promise<AutoPromotion> {
-  const result: AutoPromotion = { promoted: [], waiting: [], blocked: [] };
+  const result: AutoPromotion = { promoted: [], waiting: [], blocked: [], notes: [] };
   const drafts = (await listProposals()).filter((p) => p.status === 'draft');
+  const level = config.autonomy.level;
 
   for (const proposal of drafts) {
     if (proposal.kind === 'tool') {
-      // ADR-0010: a proposal carrying a patch is a repair to a tool that already exists,
-      // not new capability, so `self-healing` may apply it. The four checks still run —
-      // promoteProposal refuses anything touching a tool's declared powers or a protected
-      // file, and reverts anything that breaks the build or a test. This is the one place
-      // a run can take a minute longer, because applying a patch runs the whole suite.
-      if (proposal.patch && config.autonomy.level === 'self-healing') {
+      // A repair to a tool that already exists is not new capability (ADR-0010).
+      if (proposal.patch) {
+        if (atLeast(level, 'self-healing')) await attempt(proposal);
+        else result.blocked.push(proposal);
+        continue;
+      }
+      // A tool that carries a working handler installs itself at self-extending (ADR-0011).
+      // The gates live in installGeneratedTool: name collision, and a load under its own
+      // declared permissions. It never touches this repository, so the build and the test
+      // suite have nothing to say about it and are not run.
+      if (proposal.implementation) {
+        if (!atLeast(level, 'self-extending')) {
+          result.blocked.push(proposal);
+          result.notes.push({
+            id: proposal.id,
+            detail: 'a written tool installs at autonomy level self-extending; this machine is lower',
+          });
+          continue;
+        }
+        if (proposal.occurrences < 1) {
+          result.waiting.push({ proposal, needs: 1 });
+          continue;
+        }
         await attempt(proposal);
         continue;
       }
-      // Otherwise never, at any level: a new tool needs a typed handler, gates and a human.
+      // A contract with no handler still needs someone to write one.
       result.blocked.push(proposal);
+      result.notes.push({
+        id: proposal.id,
+        detail: 'describes a tool but carries no handler — build_tool writes one that can install',
+      });
       continue;
     }
-    if (config.autonomy.level !== 'adaptive') {
+
+    // Skills and rules: recomposition, and the original bargain. Evidence is the gate.
+    if (!atLeast(level, 'adaptive')) {
       result.waiting.push({ proposal, needs: 0 });
       continue;
     }
@@ -66,12 +107,13 @@ export async function runAutoPromotion(
         written: outcome.written,
       });
     } catch (e) {
-      // A malformed proposal must not take the run down; it stays a draft for a human.
-      logger.warn('autonomy.promote.failed', {
-        id: proposal.id,
-        error: (e as Error).message,
-      });
+      // A malformed proposal must not take the run down; it stays a draft for a human, and
+      // the reason is carried out rather than only logged — a refusal nobody can see reads
+      // as the feature silently not working.
+      const detail = (e as Error).message;
+      logger.warn('autonomy.promote.failed', { id: proposal.id, error: detail });
       result.waiting.push({ proposal, needs: 0 });
+      result.notes.push({ id: proposal.id, detail });
     }
   }
   return result;

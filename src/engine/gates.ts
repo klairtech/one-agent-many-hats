@@ -9,7 +9,7 @@
 
 import type { Artifact } from '../tools/artifacts.js';
 import { extractClaims, reconcile, type ReconcileReport } from './reconcile.js';
-import { completionClaimed } from './vigilance.js';
+import { askedInProse, completionClaimed } from './vigilance.js';
 import type { ToolObservation } from '../tools/types.js';
 
 /**
@@ -30,6 +30,7 @@ export const ENFORCEMENT_POINTS: Record<string, string> = {
   'gates.reviewCompleted': 'src/engine/gates.ts — reviewCompleted',
   'gates.sandboxOutputValidated': 'src/engine/gates.ts — sandboxOutputValidated',
   'gates.completionSupported': 'src/engine/gates.ts — completionSupported',
+  'gates.clarificationAsked': 'src/engine/gates.ts — clarificationAsked',
 };
 
 export function knownEnforcementPoints(): Set<string> {
@@ -54,6 +55,8 @@ export interface VerificationInput {
   reviewRequired: 'none' | 'guardian' | 'critic';
   reviewVerdict?: { role: string; verdict: string; detail: string };
   usedTools: boolean;
+  /** Tool names the run could call, so a gate can tell "did not ask" from "could not ask". */
+  allowlist?: string[];
 }
 
 /**
@@ -137,6 +140,7 @@ export function runVerificationGates(input: VerificationInput): GateFinding[] {
   const findings: GateFinding[] = [reviewCompleted(input), sandboxOutputValidated(input)];
   if (input.usedTools) findings.push(numbersReconciled(input));
   if (input.observations) findings.push(completionSupported(input));
+  if (input.observations) findings.push(clarificationAsked(input));
   return findings;
 }
 
@@ -155,6 +159,31 @@ function completionSupported(input: VerificationInput): GateFinding {
     ...(check.ok
       ? {}
       : { backtrack: 'name the part that did not complete, or verify it before claiming it' }),
+  };
+}
+
+/**
+ * A run that ends by asking for a password has not answered anything, and the person now
+ * has to translate a paragraph back into the form the agent could have shown them. Handing
+ * it back one step is cheap; making them start over is not.
+ */
+function clarificationAsked(input: VerificationInput): GateFinding {
+  const check = askedInProse(
+    input.draft,
+    input.observations ?? [],
+    (input.allowlist ?? []).includes('ask_user'),
+  );
+  return {
+    gate: 'gates.clarificationAsked',
+    ruleId: 'rule/ask-before-you-finish',
+    passed: check.ok,
+    detail: check.detail,
+    ...(check.ok
+      ? {}
+      : {
+          backtrack:
+            'call ask_user with fields for exactly those values, marking every credential type "secret", instead of asking for them in the answer',
+        }),
   };
 }
 

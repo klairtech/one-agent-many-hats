@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
 import test from 'node:test';
 
 import { knownEnforcementPoints, ENFORCEMENT_POINTS } from '../src/engine/gates.js';
-import { parseRule, parseSkill, Registry } from '../src/registry/loader.js';
+import { parseRule, parseSkill, Registry, syncPacks } from '../src/registry/loader.js';
 import { ALL_TOOLS } from '../src/tools/index.js';
 import { cleanup, tempHome } from './helpers.js';
 
@@ -153,6 +155,36 @@ test('every config section survives a save/load round trip', async () => {
     for (const key of Object.keys(cfg)) {
       assert.ok(key in loaded, `mergeConfig drops the "${key}" section`);
     }
+  } finally {
+    await cleanup(home);
+  }
+});
+
+test('sync ships a newer playbook over an installed one and leaves an equal one alone', async () => {
+  const home = await tempHome();
+  try {
+    const root = path.join(home, 'registry');
+    await syncPacks(root);
+
+    const installed = path.join(root, 'skills', 'core-discipline.md');
+    const original = await fsp.readFile(installed, 'utf8');
+    const shipped = Number(/^version:\s*(\d+)$/m.exec(original)?.[1]);
+    assert.ok(shipped >= 1, 'the shipped discipline skill must carry a version');
+
+    // A local edit at the same version survives: we have nothing newer to say.
+    await fsp.writeFile(installed, `${original}\n<!-- edited by hand -->\n`);
+    assert.equal((await syncPacks(root)).length, 0, 'an equal version overwrote a local edit');
+    assert.match(await fsp.readFile(installed, 'utf8'), /edited by hand/);
+
+    // An older install is upgraded. Without this, a shipped fix reaches nobody who has
+    // ever run hats before — their registry is written once and then frozen for good.
+    await fsp.writeFile(installed, original.replace(/^version:.*$/m, `version: ${shipped - 1}`));
+    const copied = await syncPacks(root);
+    assert.ok(
+      copied.some((f) => f.endsWith('core-discipline.md')),
+      'a newer shipped playbook did not reach an existing registry',
+    );
+    assert.equal(await fsp.readFile(installed, 'utf8'), original);
   } finally {
     await cleanup(home);
   }

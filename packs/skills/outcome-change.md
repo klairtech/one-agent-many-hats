@@ -1,7 +1,7 @@
 ---
 id: outcome/change
 kind: outcome
-version: 4
+version: 5
 description: Make a bounded edit to files in the workspace, reproduced first and verified after.
 tools:
   - list_dir
@@ -18,6 +18,7 @@ tools:
   - propose_skill
   - propose_rule
   - propose_tool
+  - build_tool
   - propose_patch
   - schedule_task
   - browser_read

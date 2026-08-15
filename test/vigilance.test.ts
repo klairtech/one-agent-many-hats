@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { completionClaimed, destroyingUnread, editDistanceWithin, nearMiss, stalled } from '../src/engine/vigilance.js';
+import { askedInProse, completionClaimed, destroyingUnread, editDistanceWithin, nearMiss, stalled } from '../src/engine/vigilance.js';
 import type { ToolObservation } from '../src/tools/types.js';
 
 function obs(over: Partial<ToolObservation>): ToolObservation {
@@ -119,4 +119,46 @@ test('a run that is going in circles is noticed early', () => {
 
   // And too little evidence is not a stall either.
   assert.equal(stalled(failing.slice(0, 2)).stalled, false);
+});
+
+/**
+ * The live failure this was written for: the agent worked out it needed AWS credentials,
+ * said so in its closing paragraph, and ended the run. ask_user sat in the allowlist for
+ * all four steps. Prompt guidance did not fix it — the realisation arrives while the agent
+ * is composing prose rather than choosing a tool.
+ */
+test('asking for a credential in the final answer is blocked while ask_user went unused', () => {
+  const draft = [
+    'I cannot answer because the data lives in AWS Athena, outside this workspace.',
+    'To proceed, please provide:',
+    '- AWS Region',
+    '- AWS Access Key ID and Secret Access Key',
+  ].join('\n');
+
+  const check = askedInProse(draft, [obs({ tool: 'read_file' })], true);
+  assert.equal(check.ok, false);
+  assert.match(check.detail, /never called/);
+});
+
+test('an agent that did ask, or could not ask, is reporting a fact rather than skipping a step', () => {
+  const draft = 'To proceed, please provide your AWS access key and region.';
+
+  // It asked and the human declined. That is an answer, not an omission.
+  assert.equal(askedInProse(draft, [obs({ tool: 'ask_user' })], true).ok, true);
+
+  // The skill never granted the tool. Describing the limit is all it can do.
+  assert.equal(askedInProse(draft, [obs({})], false).ok, true);
+});
+
+test('ordinary answers do not trip it', () => {
+  const ok = (draft: string) => askedInProse(draft, [obs({})], true).ok;
+
+  // No request for input at all.
+  assert.equal(ok('The endpoint is configured in src/config.ts (art_1).'), true);
+  // A request, but for something that is not a connection.
+  assert.equal(ok('Please provide the month you want reported, in YYYY-MM format.'), true);
+  // Connection vocabulary, but nothing is being asked of the human.
+  assert.equal(ok('The credentials are read from the AWS profile named "prod" (art_2).'), true);
+  // Reporting a refusal it already hit.
+  assert.equal(ok('The access key in the environment is expired, so the query failed.'), true);
 });

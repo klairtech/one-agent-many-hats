@@ -130,9 +130,15 @@ export interface HatsConfig {
  * applies without a prompt. It still cannot touch a tool's declared powers or any file
  * that enforces a boundary, so the level widens *what may be repaired*, never *what may
  * be permitted*.
+ *
+ * ADR-0011 adds `self-extending`: the agent may write a *new* tool and declare its own
+ * authority, because that authority is now enforced by the flags its process is started
+ * with rather than believed by the executor. The ADR-0006 argument against this — that a
+ * self-written spec is an unchecked claim — stopped applying the moment the spec became
+ * the thing that builds the jail.
  */
 export interface Autonomy {
-  level: 'supervised' | 'adaptive' | 'self-healing';
+  level: 'supervised' | 'adaptive' | 'self-healing' | 'self-extending';
   /** How many times a proposal must recur before `adaptive` will promote it. */
   promoteAfterOccurrences: number;
   /** Auto-promoted entries land here first and are announced; never silently live. */
