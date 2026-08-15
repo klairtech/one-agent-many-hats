@@ -2,7 +2,7 @@
 id: behaviour/guardian
 kind: behavioural
 role: guardian
-version: 1
+version: 2
 description: Adversarial pre-delivery check. Assume the previous step is wrong; find how.
 triggers: [verify, check, validate, is this right, sanity]
 stages: [verify]
@@ -10,6 +10,7 @@ tools:
   - check_consistency
   - read_file
   - derive_metric
+  - read_playbook
 review: none
 tier: standard
 ---

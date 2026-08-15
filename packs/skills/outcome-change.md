@@ -1,7 +1,7 @@
 ---
 id: outcome/change
 kind: outcome
-version: 5
+version: 6
 description: Make a bounded edit to files in the workspace, reproduced first and verified after.
 tools:
   - list_dir
@@ -16,6 +16,7 @@ tools:
   - recall_memory
   - ask_user
   - propose_skill
+  - read_playbook
   - propose_rule
   - propose_tool
   - build_tool

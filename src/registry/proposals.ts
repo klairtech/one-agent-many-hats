@@ -203,7 +203,24 @@ export async function promoteProposal(
       ? parseSkill(proposal.content, `proposal:${id}`)
       : parseRule(proposal.content, `proposal:${id}`);
 
-  const live = path.join(root, dir, `${slugify(parsed.id)}.md`);
+  // Resolved by the id *inside* each file, not by slugifying the id into a filename. Those
+  // two agree for skills by luck — `outcome/answer` slugs to `outcome-answer.md`, which is
+  // what it is called — and never for rules: `rule/no-invented-numbers` slugs to
+  // `rule-no-invented-numbers.md` while the file shipped as `no-invented-numbers.md`. So a
+  // revision of any rule found no existing file, skipped the weakening check, and wrote a
+  // second rule with the same id alongside the first.
+  const live = (await findLiveFile(root, dir, parsed.id)) ?? path.join(root, dir, `${slugify(parsed.id)}.md`);
+
+  // A revision of a rule may sharpen what it says and may not weaken what it enforces.
+  // Nothing else in the pipeline would notice `strength: gate` becoming `strength: prompt`:
+  // it parses, it promotes, and the check quietly stops running while the text still reads
+  // like a rule.
+  if (proposal.kind === 'rule' && (await exists(live))) {
+    const { assertRuleRevision } = await import('./revision.js');
+    const currentRaw = await fsp.readFile(live, 'utf8');
+    assertRuleRevision(parseRule(currentRaw, live), parsed as import('./types.js').Rule);
+  }
+
   const currentVersion = (await exists(live)) ? await readVersion(live, proposal.kind) : 0;
   const nextVersion = Math.max(currentVersion + 1, parsed.version);
   const content = setVersionInFrontmatter(proposal.content, nextVersion);
@@ -245,6 +262,15 @@ function setVersionInFrontmatter(content: string, version: number): string {
     return content.replace(/\nversion:\s*\d+/, `\nversion: ${version}`);
   }
   return content.replace(/^---\n/, `---\nversion: ${version}\n`);
+}
+
+/** The file whose frontmatter declares this id, if one is already live. */
+async function findLiveFile(root: string, dir: string, id: string): Promise<string | null> {
+  for (const file of await listFiles(path.join(root, dir), '.md')) {
+    const raw = await fsp.readFile(file, 'utf8').catch(() => '');
+    if (new RegExp(`^id:\\s*${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm').test(raw)) return file;
+  }
+  return null;
 }
 
 export function slugify(id: string): string {
