@@ -35,6 +35,11 @@ export class PersonaStore {
     private readonly maxChars: number,
   ) {}
 
+  /** So the panel can say where this lives, like it already does for the org note. */
+  get path(): string {
+    return this.file;
+  }
+
   static forWorkspace(workspaceDir: string, maxChars: number): PersonaStore {
     return new PersonaStore(path.join(workspaceDir, 'memory', 'persona.json'), maxChars);
   }
@@ -76,6 +81,28 @@ export class PersonaStore {
   async noteRun(): Promise<Persona> {
     const current = await this.get();
     const next: Persona = { ...current, runCount: current.runCount + 1, updatedAt: utcStamp() };
+    await writeJsonAtomic(this.file, next);
+    return next;
+  }
+
+  /**
+   * Drop one inferred fact.
+   *
+   * Needed because the persona is inferred from what the user *did*, and a run that was a
+   * test, a one-off, or somebody else at the keyboard produces a fact that is simply wrong
+   * about them — and then quietly steers every future run. Clearing the whole persona to
+   * remove one wrong sentence costs all the right ones, so nobody does it.
+   */
+  async forgetFact(fact: string): Promise<Persona> {
+    const current = await this.get();
+    const facts = current.facts.filter((f) => f !== fact);
+    if (facts.length === current.facts.length) return current;
+    const next: Persona = {
+      summary: facts.join(' '),
+      facts,
+      runCount: current.runCount,
+      updatedAt: utcStamp(),
+    };
     await writeJsonAtomic(this.file, next);
     return next;
   }

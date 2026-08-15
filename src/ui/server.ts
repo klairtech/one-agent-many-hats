@@ -522,7 +522,14 @@ export async function startUi(
           takeaways: takeaways.slice(-40).reverse(),
           lessons: lessons.sort((a, b) => b.confidence - a.confidence),
           orgPath: session.memory.org.path,
+          personaPath: session.memory.persona.path,
         });
+      }
+
+      case 'POST /api/persona/forget': {
+        const body = (await readBody(req)) as { fact?: string };
+        const persona = await session.memory.persona.forgetFact(String(body.fact ?? ''));
+        return json(res, 200, persona);
       }
 
       case 'POST /api/org': {

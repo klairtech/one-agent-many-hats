@@ -1059,8 +1059,25 @@ async function loadMemory() {
 
   const per = el('section', 'sect');
   per.appendChild(el('p', 'h3', 'Persona'));
-  per.appendChild(el('p', 'xs note', 'Inferred, size-bounded, and deliberately modest — useful when right and harmless when stale.'));
-  per.appendChild(st(el('p', 'sm', m.persona.summary || 'Nothing inferred yet.'), 'margin:11px 0 0;color:' + (m.persona.summary ? 'var(--ink)' : 'var(--ink-3)')));
+  per.appendChild(el('p', 'xs note', 'Inferred from how you have worked, one sentence at a time. Every line here is in the prompt of every run, so a wrong one steers the agent quietly — forget it and it stops.'));
+  // One row per fact rather than the joined summary. They were technically on screen before,
+  // concatenated into a single paragraph, which is the same as not being on screen: nobody
+  // reads a wall of inferences about themselves, and there was no way to drop just the wrong one.
+  if (!m.persona.facts || m.persona.facts.length === 0) {
+    per.appendChild(st(el('p', 'sm', 'Nothing inferred yet.'), 'margin:11px 0 0;color:var(--ink-3)'));
+  } else {
+    const pul = el('ul', 'rowlist');
+    m.persona.facts.forEach((f) => {
+      const li = el('li');
+      li.appendChild(st(el('span', 'sm', f), 'min-width:200px;flex:1;text-wrap:pretty'));
+      const drop = el('button', 'btn3 btnsm', 'Forget');
+      drop.onclick = async () => { await post('/api/persona/forget', { fact: f }); loadMemory(); };
+      li.appendChild(drop);
+      pul.appendChild(li);
+    });
+    per.appendChild(pul);
+  }
+  per.appendChild(st(el('p', 'xs mono', m.personaPath || ''), 'margin:8px 0 0;color:var(--ink-3)'));
 
   const les = el('section', 'sect');
   les.appendChild(el('p', 'h3', 'Lessons'));
