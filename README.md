@@ -194,17 +194,73 @@ When the same gap keeps appearing, it drafts a skill, a rule or a tool — into 
 folder, never into the live registry. There is no tool that writes a live skill. Not a
 restricted one, not an admin one.
 
-You can loosen that. On `adaptive`, a skill or rule that has recurred three times promotes
-itself, versioned and announced. **A tool never auto-promotes at any setting**, and that
-line is deliberate: a skill can only rearrange abilities you already granted, while a tool
-is a new ability. A model proposing one while the same model approves it is not a control.
-The argument, including the strongest case against it, is written up in the architecture
-decision records that ship with the source.
+You can loosen that, one rung at a time. On `adaptive`, a skill or rule that has recurred
+three times promotes itself, versioned and announced. On `self-healing`, a fix to a tool
+that already exists applies once the build and the entire test suite pass, and reverts on
+either failure.
 
 Watching a 7B do this was the useful part. It proposed both a skill and a tool, and its
 skill had a malformed header — so promotion refused it with a line number instead of
 writing a broken playbook into the registry. Proposals are parsed before they are promoted,
 which is the difference between a system that grows and a system that corrupts itself.
+
+### It can write a tool, and the tool cannot lie about what it does
+
+For a long time the top rung was "a tool never auto-promotes at any setting", and the
+reason sounded solid: a skill rearranges abilities you already granted, a tool is a new
+ability, and a model proposing one while the same model approves it is not a control.
+
+Then someone asked an ordinary question — how many rows are in the orders table — about
+data that lived behind an API. It read the docs, worked out it needed a connector,
+collected the credentials, and stopped, because there was nowhere to go. It could describe
+the tool it needed in precise detail and could not build it. That is not an agent that
+extends itself; it is an agent that files tickets.
+
+The objection was never really about tools. It was about *declarations nothing checked*: a
+tool's spec claims `mutating: false`, and the executor believes it. So invert it. On
+`self-extending`, `build_tool` writes a real handler and declares its own powers, and those
+declarations become the flags its process is started with. A tool that says
+`mutating: false` is spawned without `--allow-fs-write`, and Node refuses the write no
+matter what the code attempts. The declaration cannot be a lie, because the declaration is
+what builds the jail.
+
+There is no clever static analysis of the generated source, deliberately —
+`globalThis['fe'+'tch']` defeats any regex, and a check that can be evaded is worse than
+none because it reads as protection.
+
+Generated tools live in `~/.hats/tools`, outside your repository, so nothing an agent wrote
+can reach a commit by accident and revoking one is deleting a directory. They still pass
+through the same executor as everything else. And a tool built to answer one question can
+be kept for the conversation only, so a one-off leaves nothing behind.
+
+The honest edge: `network: true` is a real widening, and it is what a connector needs by
+definition. It is visible in the manifest, in the Tools tab, and in the audit log.
+`minProfile` is self-declared and no flag enforces it, so a tool that declares `read-only`
+on something that should have needed approval skips a prompt — bounded by the fact that the
+filesystem grant is still the workspace and nothing else.
+
+### It can fix a playbook, not just add another one
+
+It could always write a *new* skill or rule. Revising one needed something it did not have:
+the current text. So the only way to improve a playbook that was nearly right was to write
+a second one from memory, and two overlapping playbooks make routing come out differently
+run to run.
+
+Now it reads the live text and edits that, keeping the id. A revision lands on first
+sighting rather than waiting to recur three times — the recurrence bar asks whether
+something new is worth adding, which is the wrong question for a fix to something that
+already exists and is already wrong. The replaced version is kept, so a bad revision is one
+command away from being undone.
+
+A rule revision has one limit. It may sharpen what the rule says, narrow its scope, record
+what it learned. It may not lower `strength`, repoint `enforced_by`, or downgrade blocking
+to warning — each of those removes the check while leaving text that still reads like a
+rule, and each is refused. Promotion up the ladder, `prompt → gate → code`, is allowed.
+
+Worth knowing what this adds up to: at `self-extending` a run can revise a live rule with
+no human in the loop. The boundary cannot be dismantled, but its *wording* can drift over
+many runs, each step looking reasonable on its own. `hats registry` shows what changed and
+every version is on disk. Glance at it occasionally rather than never.
 
 ### Any model, including the ones on your own machine
 
@@ -358,6 +414,13 @@ some I do not.
   the slashes now.
 - **Decisions are serial by design.** The critic and the guardian are hats on one timeline,
   so you wait for them. That is the price of being able to reconstruct what happened.
+- **A tool the agent wrote is only as good as the model that wrote it.** The runtime
+  guarantees what such a tool may *touch*, not that its logic is right. On a small model
+  expect a few failed attempts before one compiles — the failures are visible and it
+  recovers, but a connector it produces deserves a read before you rely on its numbers.
+- **`self-extending` means it can change its own playbooks unattended.** A rule cannot be
+  weakened and every version is kept, so nothing silently loses a guardrail. Wording still
+  drifts if you never look. `hats registry` is the place to look.
 - **Retrieval is keyword matching until you set an embedding model.** It is honest about
   that in every result, which is the least it can do, but a keyword miss is not evidence of
   absence. Memory retrieval is keyword-only regardless; it holds hundreds of short strings,
