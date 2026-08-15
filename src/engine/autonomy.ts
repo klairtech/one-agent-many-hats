@@ -56,6 +56,17 @@ export async function runAutoPromotion(
       // declared permissions. It never touches this repository, so the build and the test
       // suite have nothing to say about it and are not run.
       if (proposal.implementation) {
+        // Asked for as conversation-scoped. It ran in the conversation that built it and is
+        // kept only so a person can adopt it deliberately — installing it here would make
+        // "nothing was installed on the device" false a few seconds after it was said.
+        if (proposal.ephemeral) {
+          result.blocked.push(proposal);
+          result.notes.push({
+            id: proposal.id,
+            detail: 'built for one conversation; promote it by hand if you want to keep it',
+          });
+          continue;
+        }
         if (!atLeast(level, 'self-extending')) {
           result.blocked.push(proposal);
           result.notes.push({

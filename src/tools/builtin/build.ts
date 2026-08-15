@@ -151,6 +151,7 @@ export const buildTool: ToolHandler = {
       content: describe(tool),
       createdByRun: ctx.runId,
       implementation: { tool, code },
+      ...(retain === 'conversation' ? { ephemeral: true } : {}),
     });
 
     // Conversation-scoped: callable immediately, never written to disk. A tool built to
@@ -161,9 +162,10 @@ export const buildTool: ToolHandler = {
       return {
         summary:
           `built ${name} and it is callable now, for this conversation only — nothing was ` +
-          `installed anywhere. Declared mutating: ${tool.mutating}, network: ${tool.network}. ` +
-          `Say so when you deliver, and offer to keep it if they will want it again.`,
-        payload: { tool, retained: 'conversation' },
+          `installed on the device, and it is gone when this run ends. Declared mutating: ` +
+          `${tool.mutating}, network: ${tool.network}. Say so when you deliver, and offer to ` +
+          `keep it if they will want it again.`,
+        payload: { id: proposal.id, tool, retained: 'conversation' },
         provenance: { name, generated: true, retained: 'conversation' },
       };
     }
