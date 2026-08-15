@@ -47,6 +47,12 @@ export interface Proposal {
    * Promotion installs this; without it a tool proposal is still a contract for a person.
    */
   implementation?: { tool: import('../tools/generated/store.js').GeneratedTool; code: string };
+  /**
+   * The playbook id this claims to replace, when the agent said so. Recorded for the record
+   * and the panel — never used to decide anything, because `isRevision` can establish the
+   * same fact from the registry and does not depend on the model remembering to declare it.
+   */
+  revises?: string;
 }
 
 export function proposalsDir(kind: ProposalKind, root = registryDir()): string {
@@ -203,13 +209,44 @@ export async function promoteProposal(
       ? parseSkill(proposal.content, `proposal:${id}`)
       : parseRule(proposal.content, `proposal:${id}`);
 
-  const live = path.join(root, dir, `${slugify(parsed.id)}.md`);
+  // Resolved by the id *inside* each file, not by slugifying the id into a filename. Those
+  // two agree for skills by luck — `outcome/answer` slugs to `outcome-answer.md`, which is
+  // what it is called — and never for rules: `rule/no-invented-numbers` slugs to
+  // `rule-no-invented-numbers.md` while the file shipped as `no-invented-numbers.md`. So a
+  // revision of any rule found no existing file, skipped the weakening check, and wrote a
+  // second rule with the same id alongside the first.
+  const live = (await findLiveFile(root, dir, parsed.id)) ?? path.join(root, dir, `${slugify(parsed.id)}.md`);
+
+  // A revision of a rule may sharpen what it says and may not weaken what it enforces.
+  // Nothing else in the pipeline would notice `strength: gate` becoming `strength: prompt`:
+  // it parses, it promotes, and the check quietly stops running while the text still reads
+  // like a rule.
+  if (proposal.kind === 'rule' && (await exists(live))) {
+    const { assertRuleRevision } = await import('./revision.js');
+    const currentRaw = await fsp.readFile(live, 'utf8');
+    assertRuleRevision(parseRule(currentRaw, live), parsed as import('./types.js').Rule);
+  }
+
   const currentVersion = (await exists(live)) ? await readVersion(live, proposal.kind) : 0;
   const nextVersion = Math.max(currentVersion + 1, parsed.version);
   const content = setVersionInFrontmatter(proposal.content, nextVersion);
 
   const versionFile = path.join(root, 'versions', dir, slugify(parsed.id), `v${nextVersion}.md`);
   await ensureDir(path.dirname(versionFile));
+
+  // Snapshot what is being replaced, if nothing has snapshotted it yet.
+  //
+  // History only ever recorded versions this code wrote, so a playbook that shipped in the
+  // pack and was then revised had exactly one entry — the *new* text. "The previous version
+  // is kept, so a bad revision can be reverted" was therefore false for the first revision
+  // of every shipped playbook, which is precisely the revision most likely to be wrong.
+  if (currentVersion > 0) {
+    const previous = path.join(path.dirname(versionFile), `v${currentVersion}.md`);
+    if (!(await exists(previous))) {
+      await writeTextAtomic(previous, await fsp.readFile(live, 'utf8'));
+    }
+  }
+
   await writeTextAtomic(versionFile, content);
   await writeTextAtomic(live, content);
   await setProposalStatus(id, 'promoted', root);
@@ -245,6 +282,30 @@ function setVersionInFrontmatter(content: string, version: number): string {
     return content.replace(/\nversion:\s*\d+/, `\nversion: ${version}`);
   }
   return content.replace(/^---\n/, `---\nversion: ${version}\n`);
+}
+
+/**
+ * Is this proposal replacing a playbook that already exists?
+ *
+ * Answered from the registry rather than from what the proposal claims. A revision is a
+ * proposal whose document declares an id that is already live — that is what makes
+ * promotion overwrite one file instead of adding another, so it is also the honest
+ * definition, whether or not the agent passed `revises`.
+ */
+export async function isRevision(proposal: Proposal, root = registryDir()): Promise<boolean> {
+  if (proposal.kind === 'tool') return false;
+  const id = /^id:\s*(.+)$/m.exec(proposal.content)?.[1]?.trim();
+  if (!id) return false;
+  return (await findLiveFile(root, proposal.kind === 'skill' ? 'skills' : 'rules', id)) !== null;
+}
+
+/** The file whose frontmatter declares this id, if one is already live. */
+async function findLiveFile(root: string, dir: string, id: string): Promise<string | null> {
+  for (const file of await listFiles(path.join(root, dir), '.md')) {
+    const raw = await fsp.readFile(file, 'utf8').catch(() => '');
+    if (new RegExp(`^id:\\s*${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm').test(raw)) return file;
+  }
+  return null;
 }
 
 export function slugify(id: string): string {

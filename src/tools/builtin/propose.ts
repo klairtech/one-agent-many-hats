@@ -20,12 +20,18 @@ export const proposeSkill: ToolHandler = {
   spec: {
     name: 'propose_skill',
     description:
-      'Stage a draft skill for human review, when a kind of work has recurred and no playbook covers it. This does not change your behaviour now or in the next run — a human reviews and promotes it.',
+      'Stage a draft skill, either new or a revision of one that exists. Use it when a kind of work has recurred and no playbook covers it, or when a playbook you just worked under was wrong or incomplete in a way you can now state precisely — pass `revises` for that case. It does not change your behaviour in this run.',
     parameters: {
       type: 'object',
       properties: {
         title: { type: 'string', description: 'Short name for the proposed skill.' },
         rationale: RATIONALE,
+        revises: {
+          type: 'string',
+          description:
+            'The id of an existing playbook this replaces, e.g. "outcome/answer". Read it with read_playbook first and edit that text — a revision keeps the id and bumps the version, and the previous version is kept so a bad one can be reverted. Prefer revising over adding whenever an existing playbook is nearly right: two playbooks that overlap make selection come out differently run to run.',
+        },
+
         content: {
           type: 'string',
           description:
@@ -45,12 +51,18 @@ export const proposeRule: ToolHandler = {
   spec: {
     name: 'propose_rule',
     description:
-      'Stage a draft guardrail for human review, when something went wrong that a constraint would have prevented. State the enforcement strength you think it deserves and why.',
+      'Stage a draft guardrail, either new or a revision of one that exists. Use it when something went wrong that a constraint would have prevented, or when an existing rule fired on the wrong thing and you can say exactly how to narrow it — pass `revises` for that. You may sharpen what a rule says; you may not lower its strength or repoint its enforcement, and an attempt to is refused.',
     parameters: {
       type: 'object',
       properties: {
         title: { type: 'string', description: 'Short name for the proposed rule.' },
         rationale: RATIONALE,
+        revises: {
+          type: 'string',
+          description:
+            'The id of an existing playbook this replaces, e.g. "outcome/answer". Read it with read_playbook first and edit that text — a revision keeps the id and bumps the version, and the previous version is kept so a bad one can be reverted. Prefer revising over adding whenever an existing playbook is nearly right: two playbooks that overlap make selection come out differently run to run.',
+        },
+
         content: {
           type: 'string',
           description:
@@ -102,6 +114,20 @@ async function stage(
     throw new HatsError('TOOL_INPUT_INVALID', 'a proposal needs a title and content', {});
   }
 
+  const revises = typeof args['revises'] === 'string' ? args['revises'].trim() : '';
+  if (revises && !new RegExp(`^id:\\s*${revises.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm').test(content)) {
+    // Caught here rather than at promotion: `revises: outcome/answer` with `id: outcome/answer-v2`
+    // in the body is not a revision, it is a near-duplicate wearing a revision's label, and
+    // the id in the document is what actually decides which file gets overwritten.
+    throw new HatsError(
+      'TOOL_INPUT_INVALID',
+      `this claims to revise "${revises}" but the document's frontmatter does not say ` +
+        `\`id: ${revises}\`. The id in the document is what decides which playbook is replaced, ` +
+        `so they have to agree. Read the current one with read_playbook and edit that text.`,
+      { revises },
+    );
+  }
+
   const proposal = await stageProposal({
     kind,
     title,
@@ -109,11 +135,12 @@ async function stage(
     evidence: [`run:${ctx.runId}`],
     content,
     createdByRun: ctx.runId,
+    ...(revises ? { revises } : {}),
   });
 
   return {
     summary:
-      `staged ${kind} proposal "${title}" as ${proposal.id}` +
+      `staged ${kind} ${revises ? `revision of ${revises}` : 'proposal'} "${title}" as ${proposal.id}` +
       (proposal.occurrences > 1 ? ` (seen ${proposal.occurrences} times now)` : '') +
       `. It is a draft: it does not affect this run or the next one. A human promotes it with \`hats promote ${proposal.id}\`.`,
     payload: proposal,

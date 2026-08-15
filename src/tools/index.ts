@@ -20,6 +20,7 @@ import { audioTools } from './builtin/audio.js';
 import { browserTools } from './builtin/browser.js';
 import { patchTools } from './builtin/patch.js';
 import { buildTool } from './builtin/build.js';
+import { readPlaybook } from './builtin/playbook.js';
 import { searchTools } from './builtin/search.js';
 import { systemTools } from './builtin/system.js';
 import { sandboxTools } from './sandbox/sandbox.js';
@@ -39,6 +40,7 @@ export const ALL_TOOLS: ToolHandler[] = [
   ...browserTools,
   ...patchTools,
   buildTool,
+  readPlaybook,
   ...searchTools,
   ...systemTools,
 ];

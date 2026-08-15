@@ -145,8 +145,15 @@ export const checkConsistency: ToolHandler = {
           ? `\n\nUnsupported: ${report.unsupported.map((u) => u.token).join(', ')}. Either derive them with a tool, quote the artifact that has them, or remove the claim.`
           : ''),
       payload: report,
-      provenance: { artifactCount: artifacts.length },
-      failed: report.unsupported.length > 0,
+      provenance: { artifactCount: artifacts.length, verdict },
+      // Deliberately not `failed: unsupported.length > 0`. A check that reports "1 of 5
+      // claims does not reconcile" has worked perfectly — the verdict is its output, not
+      // its failure. Marking it failed conflated "the tool broke" with "the tool found
+      // something", and the completion gate then counted a *successful self-check* as a
+      // failed tool call: a run that caught its own bad draft, fixed it, and delivered
+      // correct numbers was made to append "unverified — 1 tool call failed" to an answer
+      // that was right. The verdict is in the summary, where the model reads it.
+      // [Seen in a live run, 2026-08-15: 1,284 rows, correct, disclosed as unverified.]
     };
   },
 };

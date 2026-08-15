@@ -1,7 +1,7 @@
 ---
 id: outcome/research
 kind: outcome
-version: 8
+version: 9
 description: Answer a question that needs sources from the web, with every claim traced to a URL.
 tools:
   - fetch_url
@@ -15,6 +15,7 @@ tools:
   - recall_memory
   - ask_user
   - propose_skill
+  - read_playbook
   - propose_rule
   - propose_tool
   - build_tool
