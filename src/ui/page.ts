@@ -191,6 +191,7 @@ table.grid td{padding:9px 0;border-top:1px solid var(--line)}
           <h1 class="h1" id="view-title" style="margin:0"></h1>
           <p class="sm" id="view-blurb" style="margin:5px 0 0;color:var(--ink-2);max-width:70ch;text-wrap:pretty"></p>
         </div>
+        <div id="view-icons" style="flex:none;display:flex;gap:6px;align-items:center"></div>
         <button class="btn1" id="view-action" style="flex:none" hidden></button>
       </header>
       <div id="view" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;padding:20px 24px 44px"></div>
@@ -240,6 +241,7 @@ $('#theme-toggle').onclick = () => applyTheme($('#root').getAttribute('data-them
 
 // --- views ------------------------------------------------------------------------
 const ICONS = {
+  compose: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>',
   run: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
   outputs: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
   memory: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a4 4 0 0 0-4 4v1a3 3 0 0 0 0 6v3a4 4 0 0 0 8 0v-3a3 3 0 0 0 0-6V7a4 4 0 0 0-4-4z"/></svg>',
@@ -254,14 +256,14 @@ const ICONS = {
 };
 
 const VIEWS = [
-  { id: 'run', label: 'Run', title: 'Run', blurb: 'One agent, one transcript. Every answer carries the evidence it was built from, and every action passed the same gates.', load: () => renderRun() },
+  { id: 'run', label: 'Chat', title: 'Chat', blurb: 'One agent, one transcript. Every answer carries the evidence it was built from, and every action passed the same gates.', load: () => renderRun() },
   { id: 'outputs', label: 'Outputs', title: 'Outputs', blurb: 'The same files the agent can see, through the same path guard. Nothing here reaches further than it does.', load: () => loadFiles('.') },
   { id: 'memory', label: 'Memory', title: 'Memory', blurb: 'What it has been told, what it noticed, and what it learned from going wrong. Yours to edit or delete.', load: () => loadMemory() },
   { id: 'proposals', label: 'Proposals', title: 'Proposals', blurb: 'What it wants to add. It writes these; only you promote them, and a tool never promotes itself.', load: () => loadProposals() },
   { id: 'registry', label: 'Registry', title: 'Skills, rules and tools', blurb: 'Behaviour composed from files you can read. Every rule above prompt strength names the code that enforces it.', load: () => loadRegistry() },
   { id: 'analytics', label: 'Analytics', title: 'Analytics', blurb: 'Read back from the run records already on your disk. Nothing is collected and nothing is sent.', load: () => loadAnalytics() },
   { id: 'space', label: 'Storage', title: 'Storage', blurb: 'What each part costs in megabytes, and what deleting it costs you. Those are different questions.', load: () => loadSpace() },
-  { id: 'history', label: 'Conversations', title: 'Past conversations', blurb: 'Every run is already written to disk with its transcript and audit trail. This reads them back.', load: () => loadHistory() },
+  { id: 'history', label: 'Conversations', title: 'Past conversations', blurb: 'Open one to read it and carry on where it stopped. Every conversation is on your disk with its transcript and audit trail.', load: () => loadHistory() },
   { id: 'connectors', label: 'Connectors', title: 'Connectors and setup', blurb: 'What the tools need before they can work \u2014 search keys, hosts, mail \u2014 and MCP servers, whose tools go through the same executor as the built-in ones.', load: () => loadConnectors() },
   { id: 'schedule', label: 'Schedule', title: 'Runs without you', blurb: 'Work that fires on a timetable, and messages that arrive from off this machine. Neither can approve itself.', load: () => loadSchedules() },
   { id: 'setup', label: 'Setup', title: 'Models and providers', blurb: 'Connect a model, see live prices, install one locally. Keys are read from your environment or stored 0600, never in config.json.', load: () => loadSetup() },
@@ -324,6 +326,7 @@ function go(id, opts) {
   $('#view-title').textContent = v.title;
   $('#view-blurb').textContent = v.blurb;
   $('#view-action').hidden = true;
+  $('#view-icons').innerHTML = '';
   $('#view').innerHTML = '';
   $('#view').setAttribute('style', id === 'outputs'
     ? 'flex:1;min-height:0;display:flex;overflow:hidden;padding:0'
@@ -381,6 +384,24 @@ function subTabs(host, viewId, tabs) {
   return { activate };
 }
 
+/**
+ * An icon button in the header, to the right of the title.
+ *
+ * Used for actions that belong to the view rather than to the thing you are typing.
+ * New and Past used to sit in the composer row, where they crowded the input and read as
+ * though they did something to the message you were about to send.
+ */
+function headIcon(svg, title, fn) {
+  const b = el('button', 'btn3 btnsm');
+  b.innerHTML = svg;
+  b.title = title;
+  b.setAttribute('aria-label', title);
+  st(b, 'display:inline-flex;align-items:center;justify-content:center;padding:7px;line-height:0');
+  b.onclick = fn;
+  $('#view-icons').appendChild(b);
+  return b;
+}
+
 function headAction(label, fn) {
   const b = $('#view-action');
   b.hidden = false;
@@ -432,6 +453,8 @@ async function loadState() {
 
 // --- run --------------------------------------------------------------------------
 let chatHistory = [];
+/** Set when the thread on screen was opened from Past, so New knows it has something to clear. */
+let resumedRun = null;
 let source = null;
 let busy = false;
 
@@ -459,19 +482,22 @@ function renderRun() {
   st(input, 'flex:1;border-radius:999px;padding:13px 18px');
   const send = el('button', 'btn1', 'Send');
   send.id = 'send';
-  const fresh = el('button', 'btn3 btnsm', 'New');
-  fresh.title = 'Clear the conversation. Memory is untouched.';
-  const past = el('button', 'btn3 btnsm', 'Past');
-  past.title = 'Older conversations — every run is kept with its full transcript';
-  past.onclick = () => go('history');
-  wrap.appendChild(attach); wrap.appendChild(input); wrap.appendChild(send); wrap.appendChild(fresh); wrap.appendChild(past);
+  wrap.appendChild(attach); wrap.appendChild(input); wrap.appendChild(send);
   composer.appendChild(wrap);
   v.appendChild(composer);
   paintAttachments();
 
   send.onclick = doSend;
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSend(); });
-  fresh.onclick = () => { chatHistory = []; inner.innerHTML = ''; renderIdle(); };
+
+  // Conversation-level actions live in the header, not next to the input.
+  headIcon(ICONS.history, 'Past conversations — open one to read it and carry on', () => go('history'));
+  headIcon(ICONS.compose, 'New conversation. Memory is untouched.', () => {
+    chatHistory = [];
+    resumedRun = null;
+    inner.innerHTML = '';
+    renderIdle();
+  });
 
   const bound = STATE && (STATE.tiers.standard || STATE.tiers.light || STATE.tiers.frontier);
   send.disabled = !bound;
@@ -675,6 +701,13 @@ async function openAttach(dir) {
   (document.getElementById('root') || document.body).appendChild(shade);
 }
 
+/** One shape for a message you sent, whether it is being typed now or read back later. */
+function bubbleUser(text) {
+  const you = st(el('div'), 'display:flex;flex-direction:column;align-items:flex-end;animation:rise .2s ease both;margin-bottom:18px');
+  you.appendChild(st(el('p', null, text), 'margin:0;font-size:15px;line-height:1.6;background:var(--surface-2);border-radius:22px 22px 6px 22px;padding:13px 19px;max-width:82%;text-wrap:pretty'));
+  return you;
+}
+
 async function doSend() {
   const input = $('#prompt');
   const request = (input.value || '').trim();
@@ -686,9 +719,7 @@ async function doSend() {
   const t = $('#thread');
   if (t.querySelector('h2')) t.innerHTML = '';
 
-  const you = st(el('div'), 'display:flex;flex-direction:column;align-items:flex-end;animation:rise .2s ease both');
-  you.appendChild(st(el('p', null, request), 'margin:0;font-size:15px;line-height:1.6;background:var(--surface-2);border-radius:22px 22px 6px 22px;padding:13px 19px;max-width:82%;text-wrap:pretty'));
-  t.appendChild(you);
+  t.appendChild(bubbleUser(request));
 
   const { row, body } = agentBlock();
   t.appendChild(row);
@@ -1268,61 +1299,121 @@ async function loadHistory() {
   const d = await api('/api/runs');
   v.innerHTML = '';
   if (!d.runs.length) {
-    v.appendChild(st(el('p', 'sm', 'No runs in this workspace yet.'), 'color:var(--ink-2)'));
+    v.appendChild(st(el('p', 'sm', 'No conversations in this workspace yet.'), 'color:var(--ink-2)'));
     return;
   }
-  const wrap = st(el('div'), 'max-width:900px;display:flex;flex-direction:column;gap:10px');
+
+  // A list you pick from, not a set of drawers you unfold. Reading a transcript inline was
+  // the wrong shape: what you almost always want after finding an old conversation is to
+  // say the next thing in it, and an expander cannot offer that.
+  const wrap = st(el('div'), 'max-width:900px;display:flex;flex-direction:column;gap:8px');
   d.runs.forEach((r) => {
-    const card = st(el('section'), 'background:var(--surface);border-radius:14px;padding:14px 16px');
-    const top = st(el('div'), 'display:flex;flex-wrap:wrap;align-items:center;gap:9px;cursor:pointer');
+    const card = st(el('button'), 'display:block;width:100%;text-align:left;background:var(--surface);border:1px solid transparent;border-radius:14px;padding:13px 16px;cursor:pointer;transition:border-color .12s,background .12s');
+    card.onmouseenter = () => { card.style.borderColor = 'var(--line)'; };
+    card.onmouseleave = () => { card.style.borderColor = 'transparent'; };
+
+    const top = st(el('div'), 'display:flex;flex-wrap:wrap;align-items:center;gap:9px');
     top.appendChild(statusPill(r.ok ? 'ok' : 'incomplete', r.ok ? 'ok' : 'warn'));
-    top.appendChild(st(el('span', 'sm', r.request || '(no request)'), 'flex:1;min-width:200px'));
-    if (r.trigger) top.appendChild(statusPill(r.trigger.kind, 'idle'));
-    top.appendChild(st(el('span', 'xs num', new Date(r.startedAt).toLocaleString()), 'color:var(--ink-3)'));
+    top.appendChild(st(el('span', 'sm', r.request || '(no request)'), 'flex:1;min-width:200px;text-wrap:pretty'));
+    if (r.trigger && r.trigger.kind !== 'human') top.appendChild(statusPill(r.trigger.kind, 'idle'));
+    top.appendChild(st(el('span', 'xs num', relativeTime(r.startedAt)), 'color:var(--ink-3);flex:none'));
     card.appendChild(top);
 
-    const meta = st(el('p', 'xs'), 'margin:6px 0 0;color:var(--ink-3)');
+    const meta = st(el('p', 'xs'), 'margin:5px 0 0;color:var(--ink-3)');
     meta.textContent = [
-      r.outcomeId, r.profile,
-      (r.steps || 0) + '/' + (r.stepBudget || 0) + ' steps',
-      r.trigger ? 'started by ' + r.trigger.actor : null,
+      r.outcomeId,
+      r.profile,
+      (r.steps || 0) + ' steps',
+      r.trigger && r.trigger.actor !== 'you' ? 'started by ' + r.trigger.actor : null,
     ].filter(Boolean).join(' · ');
     card.appendChild(meta);
 
-    const body = st(el('div'), 'display:none;margin-top:12px;border-top:1px solid var(--line);padding-top:12px');
-    card.appendChild(body);
-    let loaded = false;
-    top.onclick = async () => {
-      if (body.style.display === 'block') { body.style.display = 'none'; return; }
-      body.style.display = 'block';
-      if (loaded) return;
-      loaded = true;
-      body.innerHTML = '<p class="sm" style="color:var(--ink-2)">Loading transcript…</p>';
-      let t;
-      try { t = await api('/api/transcript?runId=' + encodeURIComponent(r.runId)); }
-      catch (e) { body.innerHTML = ''; body.appendChild(st(el('p', 'sm', e.message), 'color:var(--dang)')); return; }
-      body.innerHTML = '';
-      t.turns.forEach((turn) => {
-        const line = st(el('div'), 'margin-bottom:10px');
-        const who = turn.role === 'assistant' ? 'agent' : turn.role;
-        line.appendChild(st(el('span', 'xs'), 'color:var(--ink-3)')).textContent = who;
-        if (turn.tools.length) {
-          line.appendChild(st(el('span', 'xs mono'), 'color:var(--brand-strong);margin-left:8px')).textContent = turn.tools.join(', ');
-        }
-        if (turn.html) {
-          const md = st(el('div', 'md'), 'margin-top:4px');
-          md.innerHTML = turn.html;
-          line.appendChild(md);
-        } else if (turn.content) {
-          line.appendChild(st(el('p', 'sm'), 'margin:4px 0 0;white-space:pre-wrap;text-wrap:pretty')).textContent = turn.content.slice(0, 4000);
-        }
-        body.appendChild(line);
-      });
-      if (!t.turns.length) body.appendChild(st(el('p', 'sm', 'No transcript was kept for this run.'), 'color:var(--ink-2)'));
-    };
+    card.onclick = () => openConversation(r);
     wrap.appendChild(card);
   });
   v.appendChild(wrap);
+}
+
+/** "3 minutes ago" reads better than a timestamp in a list you are scanning. */
+function relativeTime(iso) {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return '';
+  const mins = Math.round((Date.now() - then) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + (mins === 1 ? ' minute ago' : ' minutes ago');
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return hours + (hours === 1 ? ' hour ago' : ' hours ago');
+  const days = Math.round(hours / 24);
+  if (days < 7) return days + (days === 1 ? ' day ago' : ' days ago');
+  return new Date(iso).toLocaleDateString();
+}
+
+/**
+ * Open a past conversation in the chat and let the user carry on.
+ *
+ * The server call is the part that matters: it replaces the history that reaches the model.
+ * Painting the old turns here without it would look resumed and behave like a fresh start,
+ * which is worse than not offering it.
+ */
+async function openConversation(run) {
+  go('run');
+  const thread = $('#thread');
+  thread.innerHTML = '';
+  thread.appendChild(st(el('p', 'sm', 'Opening…'), 'color:var(--ink-2)'));
+
+  let d;
+  try {
+    d = await post('/api/resume', { runId: run.runId });
+  } catch (e) {
+    thread.innerHTML = '';
+    thread.appendChild(st(el('p', 'sm', 'Could not open that conversation: ' + e.message), 'color:var(--dang)'));
+    return;
+  }
+
+  resumedRun = run.runId;
+  chatHistory = [];
+  thread.innerHTML = '';
+
+  const banner = st(el('div'), 'margin:0 0 16px;padding:9px 13px;border-radius:11px;background:var(--surface);display:flex;flex-wrap:wrap;gap:9px;align-items:center');
+  banner.appendChild(st(el('span', 'xs', 'Continuing a conversation from ' + relativeTime(run.startedAt)), 'color:var(--ink-2)'));
+  const leave = el('button', 'btn3 btnsm', 'Start fresh instead');
+  leave.onclick = async () => {
+    await post('/api/run', { request: '', fresh: true }).catch(() => {});
+    resumedRun = null;
+    chatHistory = [];
+    thread.innerHTML = '';
+    renderIdle();
+  };
+  banner.appendChild(leave);
+  thread.appendChild(banner);
+
+  d.turns.forEach((turn) => {
+    if (turn.role === 'user') {
+      thread.appendChild(bubbleUser(turn.content));
+      return;
+    }
+    if (turn.role !== 'assistant') return;
+    if (!turn.content && !(turn.tools || []).length) return;
+    const box = st(el('div'), 'margin:0 0 18px');
+    if ((turn.tools || []).length) {
+      box.appendChild(st(el('p', 'xs mono', turn.tools.join(', ')), 'margin:0 0 5px;color:var(--brand-strong)'));
+    }
+    if (turn.html) {
+      const md = st(el('div', 'md'), 'margin:0');
+      md.innerHTML = turn.html;
+      box.appendChild(md);
+    } else if (turn.content) {
+      box.appendChild(st(el('p', 'sm'), 'margin:0;white-space:pre-wrap;text-wrap:pretty')).textContent = turn.content;
+    }
+    thread.appendChild(box);
+  });
+
+  if (!d.turns.length) {
+    thread.appendChild(st(el('p', 'sm', 'No transcript was kept for this conversation, so there is nothing to carry forward.'), 'color:var(--ink-2)'));
+  }
+  thread.scrollTop = thread.scrollHeight;
+  const input = $('#prompt');
+  if (input) { input.placeholder = 'Carry on…'; input.focus(); }
 }
 
 /**

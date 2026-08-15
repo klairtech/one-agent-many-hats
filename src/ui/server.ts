@@ -740,6 +740,66 @@ export async function startUi(
         return json(res, 200, { record, turns });
       }
 
+      case 'POST /api/resume': {
+        // Open a past conversation and carry on talking in it.
+        //
+        // The transcript was already readable, but only as a record: you could see what was
+        // said and not say the next thing. Resuming means the *server's* history is what
+        // gets replaced, because that is what reaches the model — painting the old turns in
+        // the browser alone would look resumed and behave like a fresh conversation.
+        const body = (await readBody(req)) as { runId?: string };
+        const id = String(body.runId ?? '');
+        if (!/^[\w.-]+$/.test(id)) return json(res, 400, { error: 'bad runId' });
+
+        const dir = path.join(workspaceDir(session.slug), 'runs', id);
+        const record = await readJson<Record<string, unknown> | null>(path.join(dir, 'run.json'), null);
+        if (!record) return json(res, 404, { error: 'NOT_FOUND' });
+
+        const fsp = await import('node:fs/promises');
+        const raw = await fsp.readFile(path.join(dir, 'transcript.jsonl'), 'utf8').catch(() => '');
+        const lines = raw
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => {
+            try {
+              return JSON.parse(line) as {
+              role?: string;
+              content?: string;
+              toolCalls?: unknown[];
+              internal?: boolean;
+            };
+            } catch {
+              return null;
+            }
+          })
+          .filter(
+            (m): m is { role?: string; content?: string; toolCalls?: unknown[]; internal?: boolean } =>
+              m !== null,
+          )
+          // The loop steers itself with synthetic user turns — a review handshake, gate
+          // feedback, a stall warning. They belong in the audit trail and not in a
+          // conversation someone reopened, where they read as things the person said.
+          .filter((m) => m.internal !== true);
+
+        // Only the spoken turns. A transcript also holds tool calls and their results, and
+        // replaying those into a new run is how you get a provider rejecting the request for
+        // tool_use blocks with no matching tool_result — the conversation is what the person
+        // wants back, not the machinery underneath it.
+        history = lines
+          .filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
+          .map((m) => ({ role: m.role as 'user' | 'assistant', content: String(m.content) }))
+          .slice(-40);
+
+        const turns = lines.map((m) => ({
+          role: m.role ?? '?',
+          content: m.content ?? '',
+          html: m.role === 'assistant' && m.content ? renderMarkdown(m.content) : null,
+          tools: ((m.toolCalls ?? []) as Array<{ name?: string }>).map((c) => c.name ?? '?'),
+        }));
+
+        return json(res, 200, { record, turns, resumed: history.length });
+      }
+
       case 'GET /api/connectors': {
         const configured = session.config.mcpServers ?? {};
         const live = session.mcp.connections;
