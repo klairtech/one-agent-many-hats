@@ -12,7 +12,10 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
+import { DEFAULT_CONFIG } from '../src/core/config.js';
 import { generatedToolsDir } from '../src/core/paths.js';
+import { runAutoPromotion } from '../src/engine/autonomy.js';
+import { stageProposal } from '../src/registry/proposals.js';
 import { loadGeneratedTools } from '../src/tools/generated/index.js';
 import { atLeast } from '../src/engine/autonomy.js';
 import { generatedHandler, permissionFlags } from '../src/tools/generated/handler.js';
@@ -267,6 +270,66 @@ test('a tool built once is available on the whole device, not just where it was 
       loaded.some((h) => h.spec.name === 'orders_api'),
       'a stored tool did not join the registry',
     );
+  } finally {
+    await cleanup(home);
+  }
+});
+
+test('a conversation-scoped tool is not installed behind the run that disowned it', async () => {
+  const home = await tempHome();
+  try {
+    // The live failure: build_tool said "for this conversation only — nothing was installed",
+    // and then auto-promotion ran at the end of the same run and installed it anyway, because
+    // the proposal it had staged looked like every other tool proposal.
+    await stageProposal({
+      kind: 'tool',
+      title: 'ephemeral_probe',
+      rationale: 'built to answer one question',
+      evidence: ['run:test'],
+      content: '# ephemeral_probe',
+      implementation: {
+        tool: tool({ name: 'ephemeral_probe' }),
+        code: 'export async function run(){return{summary:"ok"}}',
+      },
+      ephemeral: true,
+    });
+
+    const config = {
+      ...DEFAULT_CONFIG,
+      autonomy: { level: 'self-extending' as const, promoteAfterOccurrences: 3, announce: true },
+    };
+    const outcome = await runAutoPromotion(config);
+
+    assert.equal(outcome.promoted.length, 0, 'a conversation-scoped tool was installed');
+    assert.ok(outcome.notes.some((n) => /one conversation/.test(n.detail)), JSON.stringify(outcome.notes));
+    assert.deepEqual(await listGeneratedTools(), [], 'it reached the device anyway');
+  } finally {
+    await cleanup(home);
+  }
+});
+
+test('a tool meant to be kept still installs itself', async () => {
+  const home = await tempHome();
+  try {
+    await stageProposal({
+      kind: 'tool',
+      title: 'kept_probe',
+      rationale: 'they will ask again',
+      evidence: ['run:test'],
+      content: '# kept_probe',
+      implementation: {
+        tool: tool({ name: 'kept_probe' }),
+        code: 'export async function run(){return{summary:"ok"}}',
+      },
+    });
+
+    const outcome = await runAutoPromotion({
+      ...DEFAULT_CONFIG,
+      autonomy: { level: 'self-extending' as const, promoteAfterOccurrences: 3, announce: true },
+    });
+
+    assert.equal(outcome.promoted.length, 1, JSON.stringify(outcome.notes));
+    assert.deepEqual((await listGeneratedTools()).map((g) => g.tool.name), ['kept_probe']);
   } finally {
     await cleanup(home);
   }

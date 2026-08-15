@@ -48,6 +48,15 @@ export interface Proposal {
    */
   implementation?: { tool: import('../tools/generated/store.js').GeneratedTool; code: string };
   /**
+   * ADR-0011: the author asked for this to live only as long as the conversation.
+   *
+   * The implementation is still recorded, so a person can adopt it later with
+   * `hats promote`, but nothing installs it on their behalf. Without this the
+   * conversation-only path was a lie by omission: the tool was staged like any other and
+   * auto-promotion installed it seconds after the run said "nothing was installed anywhere".
+   */
+  ephemeral?: boolean;
+  /**
    * The playbook id this claims to replace, when the agent said so. Recorded for the record
    * and the panel — never used to decide anything, because `isRevision` can establish the
    * same fact from the registry and does not depend on the model remembering to declare it.
