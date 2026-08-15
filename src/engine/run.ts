@@ -480,6 +480,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
           reviewVerdict,
           usedTools: observations.length > 0,
           observations,
+          allowlist: [...allowlist],
         });
         const outcomeOfGates = await settle(prior, gateFindings, recoveries, record, emit, logger);
         if (outcomeOfGates.retry) {
@@ -506,6 +507,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
         ...(reviewVerdict ? { reviewVerdict } : {}),
         usedTools: observations.length > 0,
         observations,
+        allowlist: [...allowlist],
       });
 
       const needsReview = outcome.review !== 'none' && !reviewVerdict && !awaitingReview;

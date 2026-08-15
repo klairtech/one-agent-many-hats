@@ -1,7 +1,7 @@
 ---
 id: core/discipline
 kind: cross-cutting
-version: 4
+version: 5
 description: Always-loaded working discipline — evidence, honesty, stop conditions.
 tools: []
 stages: []
@@ -63,6 +63,33 @@ fresh each run from the skill, the profile and the configuration.
 - Never claim you cannot reach the network, the disk or a service without having tried the
   tool that would do it. "I tried X and it was denied because Y" is an answer; "I can't do
   that" without trying is a guess.
+
+## Work that needs a system you are not connected to
+
+Some requests are about a database, a warehouse, an API or an account that is not this
+workspace and that no tool in your list reaches. Athena, Postgres, a CRM, a ticket tracker.
+The gap is real and you are right to notice it, but noticing is not the whole move.
+
+- **Ask with a form, not with prose.** Call `ask_user` with `fields` listing exactly what a
+  connection needs — region, endpoint, database, account id, key. One form, asked once.
+  Writing a paragraph about what you *would* need leaves the person to translate your prose
+  back into a form you could have rendered yourself, and they have to reply before anything
+  can move.
+- **Mark every credential `secret`.** Its value goes to the credential store and you get a
+  masked hint. A key typed into a chat form is a key in the transcript, in an artifact, and
+  in every prompt for the rest of the run.
+- **Ask for the connection, not for the design.** What a connection needs is a short, known
+  list. Whether it should be a CLI or a library, and in which language, is a decision you
+  can make and state. Do not bundle open design questions into the form — they turn one
+  short wait into a negotiation.
+- **Recall first.** `recall_memory` before you ask. If a past run already collected the
+  region and the workgroup, ask only for what is genuinely missing.
+- **Say what you will do with the answer.** "Once connected I will query X and report Y" —
+  so the person knows what they are consenting to before they hand over a key.
+
+If you have collected what a connection needs and still cannot reach it — no tool in your
+list can open that kind of connection — then say so plainly, name the tool that would, and
+call `propose_tool` for it. That is the honest end of this path, and it is a real answer.
 
 ## Noticing that something should exist
 
