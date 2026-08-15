@@ -4,9 +4,11 @@
  */
 
 import assert from 'node:assert/strict';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
 import test from 'node:test';
 
-import { workspaceSlug } from '../src/core/paths.js';
+import { runDir, workspaceSlug } from '../src/core/paths.js';
 import { runAgent, advanceStage } from '../src/engine/run.js';
 import { knownEnforcementPoints } from '../src/engine/gates.js';
 import { MemoryLayers } from '../src/memory/index.js';
@@ -312,4 +314,63 @@ test('with no step budget, a run that goes in circles still ends', async () => {
   } finally {
     await cleanup(home, ws);
   }
+});
+
+/**
+ * A transcript has to hold both sides of the conversation, and has to say which turns the
+ * loop wrote to steer itself.
+ *
+ * Both halves were wrong. The opening request was pushed straight into the message array
+ * and never recorded, so every transcript on disk began with the agent replying to a
+ * question the file did not contain. And the review handshake — "review the draft above
+ * and reply with the verdict", plus the verdict itself — was indistinguishable from
+ * something the person said, so reopening a conversation showed the agent talking to
+ * itself in the middle of the chat.
+ */
+test('a transcript holds the request and marks the turns the loop wrote to itself', async () => {
+  const { home, ws, config, registry, pool, memory } = await harness([
+    { text: 'Looking.', toolCalls: [{ name: 'list_dir', args: { path: 'src' } }] },
+    { text: 'There are 2 TypeScript files under src: alpha.ts and beta.ts.' },
+    { text: 'PASS — every claim traces to the listing.' },
+  ]);
+
+  const result = await runAgent({
+    request: 'what is in src?',
+    workspaceRoot: ws,
+    config,
+    registry,
+    pool,
+    memory,
+  });
+
+  const file = path.join(runDir(workspaceSlug(ws), result.runId), 'transcript.jsonl');
+  const lines = (await fsp.readFile(file, 'utf8'))
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as { role: string; content?: string; internal?: boolean });
+
+  assert.equal(lines[0]?.role, 'user', 'the transcript must open with the request');
+  assert.equal(lines[0]?.content, 'what is in src?');
+  assert.notEqual(lines[0]?.internal, true, 'what the person asked is not internal');
+
+  // What a person would see if they reopened this: their question and the answer, with the
+  // review machinery filtered out.
+  const spoken = lines.filter((l) => l.internal !== true && (l.role === 'user' || l.role === 'assistant'));
+  assert.ok(
+    spoken.some((l) => l.role === 'assistant' && /alpha\.ts/.test(l.content ?? '')),
+    'the answer is missing from the spoken turns',
+  );
+  assert.ok(
+    !spoken.some((l) => /review the draft above|reply with the verdict/i.test(l.content ?? '')),
+    'the review handshake leaked into the conversation',
+  );
+  assert.ok(
+    !spoken.some((l) => /^PASS/.test(l.content ?? '')),
+    'the review verdict leaked into the conversation',
+  );
+
+  // It is still in the file, because the audit trail is the whole point of keeping it.
+  assert.ok(lines.some((l) => l.internal === true), 'nothing was marked internal at all');
+
+  await cleanup(home, ws);
 });

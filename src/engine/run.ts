@@ -224,7 +224,11 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
     emit({ type: 'note', message: `${handler.spec.name} is now callable in this run` });
   };
   const executor = new Executor(liveRegistry, ctx);
-  const messages: Message[] = [...(opts.history ?? []), { role: 'user', content: opts.request }];
+  // Seeded without the opening request, which is appended through `record` below so it
+  // reaches the transcript. It used to be pushed straight in here and therefore never
+  // written: every transcript on disk began with the agent's reply to a question the file
+  // did not contain, which is a hole in the audit trail as much as in the UI.
+  const messages: Message[] = [...(opts.history ?? [])];
   const observations: ToolObservation[] = [];
   const modelsUsed = new Set<string>();
   const usage = { inputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0 };
@@ -255,10 +259,20 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
   let ok = false;
   let pendingQuestion: { question: string; options?: string[] } | undefined;
 
-  const record = async (m: Message) => {
+  /**
+   * @param internal  True for a turn this loop wrote to steer itself — a review handshake,
+   *   gate feedback, a stall warning. They are genuinely part of the conversation the model
+   *   had, so the transcript keeps them for the audit trail, and they are not part of the
+   *   conversation the *person* had. Marking them here rather than pattern-matching their
+   *   wording later means rephrasing a prompt cannot silently start leaking scaffolding
+   *   into the chat someone reopens.
+   */
+  const record = async (m: Message, internal = false) => {
     messages.push(m);
-    await appendJsonl(transcriptFile, { ts: utcStamp(), ...m });
+    await appendJsonl(transcriptFile, { ts: utcStamp(), ...m, ...(internal ? { internal: true } : {}) });
   };
+
+  await record({ role: 'user', content: opts.request });
 
   try {
     // `stalledOut` is what ends an unlimited run: the counter is gone, so "it has stopped
@@ -374,11 +388,18 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
         protocolDowngraded = true;
       }
 
-      await record({
-        role: 'assistant',
-        content: response.text,
-        ...(response.toolCalls.length > 0 ? { toolCalls: response.toolCalls } : {}),
-      });
+      // A review pass is the agent grading its own draft, not answering the person. It is
+      // kept in the transcript and in the trace, and it is not part of the conversation
+      // someone reopens — "I need to review the draft I just delivered against the guardian
+      // checklist" reads as the agent talking to itself, which is exactly what it is.
+      await record(
+        {
+          role: 'assistant',
+          content: response.text,
+          ...(response.toolCalls.length > 0 ? { toolCalls: response.toolCalls } : {}),
+        },
+        reviewPass !== undefined,
+      );
 
       // A run that is going in circles cannot tell. One run revised its approach at step
       // 140 of 151; the signs were there from about step 20. The loop notices on the
@@ -387,7 +408,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       if (circling.stalled && !stallWarned) {
         stallWarned = true;
         emit({ type: 'note', message: `not making progress — ${circling.reason.split('.')[0]}` });
-        await record({ role: 'user', content: `Stop and reconsider: ${circling.reason}` });
+        await record({ role: 'user', content: `Stop and reconsider: ${circling.reason}` }, true);
       } else if (circling.stalled && stallWarned) {
         // Warned once and still going in circles. With no step counter this is the
         // terminating condition: something has to end an unbounded loop, and "it is no
@@ -400,7 +421,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
             'You are repeating yourself and it is not working. Deliver the best answer the ' +
             'evidence above supports, state plainly what you could not establish and why, ' +
             'and do not call another tool.',
-        });
+        }, true);
       }
 
       // --- acting ---
@@ -472,7 +493,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
           role: 'user',
           content:
             'You replied with nothing. Either call one of the tools you were given, or write the answer in plain text.',
-        });
+        }, true);
         continue;
       }
 
@@ -485,7 +506,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
           await record({
             role: 'user',
             content: `The ${reviewPass} found problems:\n${reviewVerdict.detail}\n\nAddress them and produce the final answer.`,
-          });
+          }, true);
           stage = 'act';
           // The corrected draft is a different draft: it has to be reviewed again.
           // Keeping the stale FAIL would block delivery for the rest of the run no
@@ -544,7 +565,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
         await record({
           role: 'user',
           content: `Before this is delivered it must pass the ${outcome.review} check. Review the draft above against your ${outcome.review} playbook and reply with the verdict.`,
-        });
+        }, true);
         continue;
       }
 
@@ -678,7 +699,7 @@ async function settle(
   draft: string,
   findings: GateFinding[],
   recoveries: number,
-  record: (m: Message) => Promise<void>,
+  record: (m: Message, internal?: boolean) => Promise<void>,
   emit: (e: RunEvent) => void,
   logger: Logger,
 ): Promise<{ retry: boolean; answer: string }> {
@@ -694,7 +715,7 @@ async function settle(
   });
 
   if (recoveries < MAX_GATE_RECOVERIES) {
-    await record({ role: 'user', content: renderGateFeedback(findings) });
+    await record({ role: 'user', content: renderGateFeedback(findings) }, true);
     return { retry: true, answer: '' };
   }
   emit({ type: 'gate', message: 'recovery spent — delivering with the gap disclosed' });
@@ -707,7 +728,7 @@ async function reflectorPass(input: {
   config: HatsConfig;
   outcome: Skill;
   messages: Message[];
-  record: (m: Message) => Promise<void>;
+  record: (m: Message, internal?: boolean) => Promise<void>;
   logger: Logger;
   workspaceRoot: string;
   profile: Profile;
