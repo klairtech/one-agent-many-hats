@@ -363,18 +363,74 @@ function readUrl() {
   return { view, tab: tab || null };
 }
 
+/**
+ * Views that are rebuilt from the server every time you open them, and views that are not.
+ *
+ * The default is not: leaving a page and coming back used to throw away everything you had
+ * done on it. The conversation you were in the middle of, the file you had opened, the row
+ * you had expanded, where you had scrolled to — all of it gone for the crime of checking
+ * something on another page. A run streaming in the background survives now too, because
+ * its nodes are still attached to the cached view rather than discarded with it.
+ *
+ * These four are the exception, and for one reason: they are what the agent runs on. A
+ * stale registry says the agent has a tool it no longer has, a stale proposal list offers a
+ * button for something already promoted, and a stale grant list is a security control
+ * showing you last week's answer. Anything that describes the agent's own capability is
+ * re-read, every time.
+ */
+const ALWAYS_FRESH = ['registry', 'proposals', 'connectors', 'schedule', 'setup'];
+
+/** Detached view roots, by view id, with where they were scrolled to. */
+const viewCache = {};
+
 function go(id, opts) {
+  const host = $('#view');
+  // Park the page being left, unless it is one that must be re-read on arrival. Moved
+  // rather than serialised: these nodes carry click handlers and a live EventSource writes
+  // into some of them, and innerHTML would keep the appearance while dropping both.
+  if (current && current !== id && !ALWAYS_FRESH.includes(current) && host.firstChild) {
+    // Read where it was scrolled to *before* taking the nodes out. An empty box is scrolled
+    // to the top by definition, so reading it afterwards records 0 for every page and the
+    // restore silently does nothing.
+    const scroll = host.scrollTop;
+    const keep = document.createDocumentFragment();
+    while (host.firstChild) keep.appendChild(host.firstChild);
+    const icons = document.createDocumentFragment();
+    const iconBar = $('#view-icons');
+    while (iconBar.firstChild) icons.appendChild(iconBar.firstChild);
+    viewCache[current] = { nodes: keep, icons, style: host.getAttribute('style'), scroll };
+  }
+
   current = id;
   const v = VIEWS.find((x) => x.id === id);
   $('#view-title').textContent = v.title;
   $('#view-blurb').textContent = v.blurb;
   $('#view-action').hidden = true;
   $('#view-icons').innerHTML = '';
-  $('#view').innerHTML = '';
-  $('#view').setAttribute('style', 'flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;padding:20px 24px 44px');
+  host.innerHTML = '';
+  host.setAttribute('style', 'flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;padding:20px 24px 44px');
   renderNav();
   if (!opts || opts.push !== false) syncUrl();
+
+  const cached = (!opts || !opts.fresh) && viewCache[id];
+  if (cached) {
+    $('#view-icons').appendChild(cached.icons);
+    host.setAttribute('style', cached.style);
+    host.appendChild(cached.nodes);
+    // Reading a layout property first. Assigning scrollTop to a box the browser has not
+    // measured since the nodes went back in silently clamps to zero, which looks exactly
+    // like not having restored the scroll at all.
+    void host.scrollHeight;
+    host.scrollTop = cached.scroll;
+    delete viewCache[id];
+    return;
+  }
   v.load();
+}
+
+/** Throw away what a view was showing, so the next visit rebuilds it from the server. */
+function invalidate(id) {
+  delete viewCache[id];
 }
 
 // Back and forward move between views rather than leaving the panel.
@@ -1440,6 +1496,11 @@ async function runInChat(request, opts) {
     body.appendChild(feedbackBar(r.runId));
     chatHistory = r.messages || chatHistory;
     scrollThread();
+    // A run is the one thing that makes every other page out of date: it may have written
+    // a file, recorded a lesson, cost something, and it is certainly a new conversation.
+    // Keeping a page you were reading is the point; showing you a version of it from
+    // before the work happened is not.
+    ['outputs', 'history', 'memory', 'analytics', 'space'].forEach(invalidate);
   });
 }
 
