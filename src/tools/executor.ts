@@ -12,6 +12,8 @@
  */
 
 import { HatsError, toHatsError } from '../core/errors.js';
+import { auditQuietly } from '../core/audit.js';
+import { currentContext } from '../core/context.js';
 import type { Profile } from '../core/config.js';
 import type { ToolCall } from '../providers/types.js';
 import { shapeText } from './artifacts.js';
@@ -223,6 +225,22 @@ export class Executor {
         ruleId: err.ruleId,
         message: err.message,
       });
+      // A refusal to let the agent past a boundary is an authorisation decision, and the
+      // two that matter later are scope (it tried to reach outside the workspace) and
+      // profile (it tried to do more than the profile permits). Ordinary tool failures are
+      // not audit events and stay in the application log where they belong.
+      if (err.code === 'SCOPE_DENIED' || err.code === 'TOOL_NOT_ALLOWED') {
+        const ctx = currentContext();
+        void auditQuietly({
+          action: 'authz.denied',
+          actor: ctx.actor ?? 'agent',
+          source: ctx.source ?? 'cli',
+          subject: ctx.workspace ?? null,
+          outcome: 'denied',
+          ...(ctx.runId ? { runId: ctx.runId } : {}),
+          detail: { tool: call.name, code: err.code, ruleId: err.ruleId, reason: err.message },
+        });
+      }
       const observation: ToolObservation = {
         ...base,
         ok: false,

@@ -20,6 +20,8 @@ import { homedir } from 'node:os';
 import { unlink } from 'node:fs/promises';
 
 import { HatsError } from '../core/errors.js';
+import { auditQuietly } from '../core/audit.js';
+import { currentContext } from '../core/context.js';
 import { grantsDir } from '../core/paths.js';
 import { ensureDir, exists, listFiles, readJson, shortHash, writeJsonAtomic } from '../core/store.js';
 
@@ -127,6 +129,23 @@ export async function createGrant(input: NewGrant): Promise<Grant> {
     ...(input.workspace ? { workspace: input.workspace } : {}),
   };
   await saveGrant(grant);
+  // A standing grant is a permission change: the thing an audit log exists to record.
+  // Without this, "who authorised this agent to do that unattended, and when" was
+  // answerable only from a file's mtime.
+  await auditQuietly({
+    action: 'grant.created',
+    actor: grant.createdBy,
+    source: 'cli',
+    subject: grant.workspace ?? null,
+    outcome: 'allowed',
+    detail: {
+      grantId: grant.id,
+      scope: grant.scope,
+      reason: grant.reason,
+      expiresAt: grant.expiresAt ?? null,
+      maxUses: grant.maxUses ?? null,
+    },
+  });
   return grant;
 }
 
@@ -166,12 +185,30 @@ export async function revokeGrant(id: string): Promise<Grant> {
   // the part that matters afterwards.
   const revoked = { ...g, revoked: true };
   await saveGrant(revoked);
+  await auditQuietly({
+    action: 'grant.revoked',
+    actor: localActor(),
+    source: 'cli',
+    subject: g.workspace ?? null,
+    outcome: 'allowed',
+    detail: { grantId: g.id, scope: g.scope },
+  });
   return revoked;
 }
 
 export async function deleteGrant(id: string): Promise<Grant> {
   const g = await getGrant(id);
   await unlink(path.join(grantsDir(), `${g.id}.json`));
+  // Deleting the grant file removes the only other evidence it ever existed, so the audit
+  // record is the whole trail from here on.
+  await auditQuietly({
+    action: 'grant.revoked',
+    actor: localActor(),
+    source: 'cli',
+    subject: g.workspace ?? null,
+    outcome: 'allowed',
+    detail: { grantId: g.id, scope: g.scope, deleted: true },
+  });
   return g;
 }
 
@@ -229,7 +266,20 @@ export async function checkGrants(
 /** Records that a grant was used. Persisted, so maxUses survives a restart. */
 export async function consumeGrant(grant: Grant): Promise<void> {
   const fresh = await getGrant(grant.id).catch(() => grant);
-  await saveGrant({ ...fresh, used: (fresh.used ?? 0) + 1 });
+  const used = (fresh.used ?? 0) + 1;
+  await saveGrant({ ...fresh, used });
+  // A grant being *spent* is the event that matters at 3am: it is the moment the agent
+  // acted on standing authority with nobody watching.
+  const ctx = currentContext();
+  await auditQuietly({
+    action: 'grant.used',
+    actor: ctx.actor ?? 'system',
+    source: ctx.source ?? 'scheduler',
+    subject: fresh.workspace ?? ctx.workspace ?? null,
+    outcome: 'allowed',
+    ...(ctx.runId ? { runId: ctx.runId } : {}),
+    detail: { grantId: fresh.id, used, maxUses: fresh.maxUses ?? null, scope: fresh.scope },
+  });
 }
 
 function withinScope(

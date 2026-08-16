@@ -17,7 +17,7 @@
 import path from 'node:path';
 
 import type { HatsConfig } from '../core/config.js';
-import { Logger } from '../core/logger.js';
+import { Logger, runtimeLogger } from '../core/logger.js';
 import { workspaceDir } from '../core/paths.js';
 import { readJson } from '../core/store.js';
 import { listProposals, stageProposal } from '../registry/proposals.js';
@@ -53,7 +53,7 @@ const SIMILARITY = 0.5;
 export async function mineProposals(
   slug: string,
   config: HatsConfig,
-  logger = new Logger({ base: { component: 'mine' } }),
+  logger: Logger = runtimeLogger('mine'),
 ): Promise<MinedProposal[]> {
   const threshold = Math.max(2, config.autonomy.promoteAfterOccurrences ?? 3);
   const runs = await recentRuns(slug);

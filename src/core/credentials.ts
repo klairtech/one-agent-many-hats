@@ -24,6 +24,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import { hatsHome } from './paths.js';
+import { auditQuietly } from './audit.js';
 
 const FILE = 'credentials.json';
 const MODE = 0o600;
@@ -62,12 +63,31 @@ export async function setCredential(providerId: string, key: string): Promise<vo
   if (trimmed) current[providerId] = trimmed;
   else delete current[providerId];
   await write(current);
+  // The change is recorded; the value never is. Which provider's key changed and when is
+  // exactly the question after a leak, and it was previously answerable only from the
+  // file's mtime — which the next write destroys.
+  await auditQuietly({
+    action: trimmed ? 'credential.set' : 'credential.cleared',
+    actor: process.env['USER'] ?? 'local',
+    source: 'cli',
+    subject: null,
+    outcome: 'allowed',
+    detail: { providerId },
+  });
 }
 
 export async function clearCredential(providerId: string): Promise<void> {
   const current = { ...readCredentials() };
   delete current[providerId];
   await write(current);
+  await auditQuietly({
+    action: 'credential.cleared',
+    actor: process.env['USER'] ?? 'local',
+    source: 'cli',
+    subject: null,
+    outcome: 'allowed',
+    detail: { providerId },
+  });
 }
 
 async function write(values: Record<string, string>): Promise<void> {

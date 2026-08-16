@@ -10,7 +10,8 @@
  * what the agent is about to do with it. ADR-0007 applies unchanged.
  */
 
-import { Logger } from '../core/logger.js';
+import { Logger, runtimeLogger } from '../core/logger.js';
+import { auditQuietly } from '../core/audit.js';
 import { toHatsError } from '../core/errors.js';
 import { getCredential } from '../core/credentials.js';
 import { channelStateDir } from '../core/paths.js';
@@ -47,7 +48,7 @@ export class ChannelManager {
   constructor(
     private readonly config: HatsConfig,
     private readonly defaultWorkspace: string,
-    private readonly logger = new Logger({ base: { component: 'channel' } }),
+    private readonly logger: Logger = runtimeLogger('channel'),
   ) {}
 
   /**
@@ -62,7 +63,8 @@ export class ChannelManager {
     for (const [id, cfg] of Object.entries(configured)) {
       if (cfg.enabled === false) continue;
       if (!cfg.allowFrom || cfg.allowFrom.length === 0) {
-        this.logger.warn('channel not started: allowFrom is empty', {
+        this.logger.warn('channel.start.refused', {
+          reason: 'allowFrom is empty',
           channel: id,
           hint: 'add the sender ids permitted to drive the agent; there is no wildcard',
         });
@@ -75,7 +77,8 @@ export class ChannelManager {
         const token =
           getCredential(`channel:${id}`) ?? (cfg.tokenEnv ? process.env[cfg.tokenEnv] : undefined);
         if (!token) {
-          this.logger.warn('channel not started: no bot token', {
+          this.logger.warn('channel.start.refused', {
+            reason: 'no bot token',
             channel: id,
             hint: `run: hats channel token ${id}`,
           });
@@ -89,7 +92,11 @@ export class ChannelManager {
       try {
         await transport.check?.();
       } catch (e) {
-        this.logger.warn('channel not started', { channel: id, error: toHatsError(e).message });
+        this.logger.warn('channel.start.failed', {
+          channel: id,
+          code: toHatsError(e).code,
+          error: toHatsError(e).message,
+        });
         continue;
       }
       this.transports.set(id, { transport, cfg });
@@ -118,7 +125,11 @@ export class ChannelManager {
         try {
           messages = await transport.poll(signal);
         } catch (e) {
-          this.logger.warn('poll failed', { channel: id, error: toHatsError(e).message });
+          this.logger.warn('channel.poll.failed', {
+            channel: id,
+            code: toHatsError(e).code,
+            error: toHatsError(e).message,
+          });
           continue;
         }
         for (const message of messages) {
@@ -148,17 +159,28 @@ export class ChannelManager {
     // gets no reply: answering would confirm the bot exists and is listening, and there is
     // no version of that which helps the owner.
     if (!cfg.allowFrom.includes(message.from)) {
-      this.logger.warn('ignored a message from an unlisted sender', {
+      this.logger.warn('channel.message.rejected', {
         channel: channelId,
         from: message.from,
         name: message.fromName,
+      });
+      // A rejected sender is an accountability event, not a debugging one: it is the
+      // question "who tried to drive this agent and was refused" that arrives later, and
+      // it cannot live only in an application log that ages out.
+      await auditQuietly({
+        action: 'auth.rejected',
+        actor: message.from,
+        source: `channel:${channelId}`,
+        subject: cfg.workspace ?? this.defaultWorkspace,
+        outcome: 'denied',
+        detail: { reason: 'sender not in allowFrom', name: message.fromName },
       });
       return { ...base, ok: false, authorised: false, answer: '' };
     }
 
     // "yes A3F1" is an answer, not a new task. Only reached once the sender is allowlisted.
     if (this.approvals.tryAnswer(message.from, message.text)) {
-      this.logger.info('answered a pending approval', { channel: channelId, from: message.from });
+      this.logger.info('channel.approval.answered', { channel: channelId, from: message.from });
       return { ...base, ok: true, authorised: true, answer: '' };
     }
 
@@ -170,7 +192,21 @@ export class ChannelManager {
     };
     const decisions: UnattendedDecision[] = [];
 
-    this.logger.info('running a message', { channel: channelId, from: message.from, profile });
+    this.logger.info('channel.message.accepted', {
+      channel: channelId,
+      from: message.from,
+      profile,
+      workspace: cfg.workspace ?? this.defaultWorkspace,
+      messageId: message.id,
+    });
+    await auditQuietly({
+      action: 'auth.accepted',
+      actor: trigger.actor,
+      source: `channel:${channelId}`,
+      subject: cfg.workspace ?? this.defaultWorkspace,
+      outcome: 'allowed',
+      detail: { profile, messageId: message.id },
+    });
 
     try {
       const result = await runUnattended({
@@ -182,7 +218,14 @@ export class ChannelManager {
         decisions,
         // The sender is reachable by definition — they just messaged us — so a mutation
         // no grant covers can be put to them rather than silently denied.
-        askHuman: (req) => this.approvals.ask(transport, message.from, req, trigger),
+        askHuman: (req) =>
+          this.approvals.ask(
+            transport,
+            message.from,
+            req,
+            trigger,
+            cfg.workspace ?? this.defaultWorkspace,
+          ),
       });
 
       const note = summariseDecisions(decisions);

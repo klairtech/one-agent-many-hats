@@ -9,7 +9,7 @@ import path from 'node:path';
 
 import { loadConfig, type HatsConfig, type Profile } from '../core/config.js';
 import { HatsError } from '../core/errors.js';
-import { Logger } from '../core/logger.js';
+import { Logger, runtimeLogger } from '../core/logger.js';
 import { hatsHome, workspaceDir, workspaceSlug } from '../core/paths.js';
 import { ensureDir, exists, writeTextAtomic } from '../core/store.js';
 import { MemoryLayers } from '../memory/index.js';
@@ -94,7 +94,9 @@ export async function openSession(flags: SessionFlags = {}): Promise<Session> {
 
   const registry = await Registry.load({ knownGates: knownEnforcementPoints() });
   const pool = new ProviderPool(config);
-  const logger = new Logger({ base: { workspace: slug }, minLevel: 'info' });
+  // Session-scoped components (memory, MCP, the index) log here. `workspace` is on the
+  // base so every record names its tenant even once records are read together.
+  const logger = runtimeLogger('session', { workspace: slug });
   const memory = new MemoryLayers(slug, config, pool, logger);
 
   // MCP servers are connected once per session, not per run: the handshake and tools/list

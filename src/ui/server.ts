@@ -42,6 +42,14 @@ import { renderPage } from './page.js';
 import { catalogue, quote } from './pricing.js';
 
 /**
+ * A run id, as `newRunId` writes it: a compact UTC stamp, a hyphen, six hex characters.
+ * Every endpoint that joins one onto a path checks it here rather than carrying its own
+ * pattern, because the pattern three of them carried allowed a dot — and a dot allows `..`,
+ * which is a path segment. Nothing on disk needs one.
+ */
+const RUN_ID = /^[\w-]+$/;
+
+/**
  * Settings this panel session owns and should keep across a re-read: the ones a flag set
  * for this invocation only. Everything else comes from disk, so a change made elsewhere
  * wins over whatever this process happened to load at startup.
@@ -556,9 +564,8 @@ export async function startUi(
       case 'GET /api/artifact': {
         const runId = url.searchParams.get('runId') ?? '';
         const id = url.searchParams.get('id') ?? '';
-        // A run id is a stamp and a hex suffix and an artifact id is `art_<hex>`: neither
-        // contains a dot, and allowing one lets `..` through as a path segment.
-        if (!/^[\w-]+$/.test(runId) || !/^\w+$/.test(id)) return json(res, 400, { error: 'bad id' });
+        // An artifact id is `art_<hex>`, so \w alone covers it.
+        if (!RUN_ID.test(runId) || !/^\w+$/.test(id)) return json(res, 400, { error: 'bad id' });
         const file = path.join(workspaceDir(session.slug), 'runs', runId, 'artifacts', `${id}.json`);
         const artifact = await readJson<Record<string, unknown> | null>(file, null).catch(() => null);
         if (!artifact) return json(res, 404, { error: 'NOT_FOUND' });
@@ -779,7 +786,7 @@ export async function startUi(
         // Past conversations. The transcript is already on disk for the audit trail; there
         // was simply no way to read one back without opening the JSONL by hand.
         const id = url.searchParams.get('runId') ?? '';
-        if (!/^[\w.-]+$/.test(id)) return json(res, 400, { error: 'bad runId' });
+        if (!RUN_ID.test(id)) return json(res, 400, { error: 'bad runId' });
         const dir = path.join(workspaceDir(session.slug), 'runs', id);
         const record = await readJson<Record<string, unknown> | null>(
           path.join(dir, 'run.json'),
@@ -820,7 +827,7 @@ export async function startUi(
         // the browser alone would look resumed and behave like a fresh conversation.
         const body = (await readBody(req)) as { runId?: string };
         const id = String(body.runId ?? '');
-        if (!/^[\w.-]+$/.test(id)) return json(res, 400, { error: 'bad runId' });
+        if (!RUN_ID.test(id)) return json(res, 400, { error: 'bad runId' });
 
         const dir = path.join(workspaceDir(session.slug), 'runs', id);
         const record = await readJson<Record<string, unknown> | null>(path.join(dir, 'run.json'), null);

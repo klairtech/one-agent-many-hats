@@ -4,6 +4,23 @@
  */
 
 import { HatsError } from '../core/errors.js';
+import { currentSink } from '../core/context.js';
+import { runtimeLogger } from '../core/logger.js';
+
+/**
+ * Retries used to be invisible. This layer backs off up to twice on 429s, 5xxs and network
+ * failures, and emitted nothing at all — so a call that succeeded on its third attempt was
+ * indistinguishable from one that succeeded immediately, and a run that was slow because a
+ * provider was rate-limiting looked simply slow. Both are questions the reconstruction test
+ * asks directly.
+ *
+ * Records go to the run's own sink when there is one (so the retry sits beside the step
+ * that provoked it), and to the runtime log otherwise — a scheduler tick has no run.
+ */
+let fallbackSink: ReturnType<typeof runtimeLogger> | undefined;
+function sink() {
+  return currentSink() ?? (fallbackSink ??= runtimeLogger('http'));
+}
 
 export interface HttpOptions {
   method?: 'GET' | 'POST';
@@ -42,10 +59,28 @@ export async function requestJson<T>(url: string, opts: HttpOptions): Promise<T>
         const err = mapHttpError(opts.providerId, res.status, text, url);
         if (RETRYABLE.has(res.status) && attempt < retries) {
           lastError = err;
-          await backoff(attempt, res.headers.get('retry-after'));
+          const waitMs = await backoff(attempt, res.headers.get('retry-after'));
+          sink().warn('http.retry', {
+            providerId: opts.providerId,
+            url: safeUrl(url),
+            attempt: attempt + 1,
+            of: retries,
+            status: res.status,
+            reason: 'retryable status',
+            waitMs,
+          });
           continue;
         }
         throw err;
+      }
+      if (attempt > 0) {
+        // Say so explicitly: "it worked in the end, after N attempts" is a different fact
+        // from "it worked", and only one of them explains the latency.
+        sink().info('http.retry.recovered', {
+          providerId: opts.providerId,
+          url: safeUrl(url),
+          attempts: attempt + 1,
+        });
       }
       return (await res.json()) as T;
     } catch (e) {
@@ -63,7 +98,16 @@ export async function requestJson<T>(url: string, opts: HttpOptions): Promise<T>
       );
       if (attempt < retries) {
         lastError = err;
-        await backoff(attempt, null);
+        const waitMs = await backoff(attempt, null);
+        sink().warn('http.retry', {
+          providerId: opts.providerId,
+          url: safeUrl(url),
+          attempt: attempt + 1,
+          of: retries,
+          reason: aborted ? 'timeout' : 'network error',
+          error: (e as Error).message,
+          waitMs,
+        });
         continue;
       }
       throw err;
@@ -83,12 +127,28 @@ async function safeText(res: Response): Promise<string> {
   }
 }
 
-async function backoff(attempt: number, retryAfter: string | null): Promise<void> {
+/** Returns how long it actually waited, so the retry record can explain the latency. */
+async function backoff(attempt: number, retryAfter: string | null): Promise<number> {
   const headerMs = retryAfter ? Number(retryAfter) * 1000 : NaN;
   const ms = Number.isFinite(headerMs)
     ? Math.min(headerMs, 20_000)
     : Math.min(500 * 2 ** attempt, 8_000) + Math.floor(Math.random() * 250);
   await new Promise((r) => setTimeout(r, ms));
+  return ms;
+}
+
+/**
+ * A provider URL can carry a key in its query string — Gemini's does. The generic redactor
+ * would catch the known parameter names, but stripping the query here means the value never
+ * reaches the record in the first place, which is the weaker assumption and the safer one.
+ */
+function safeUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return url.split('?')[0] ?? url;
+  }
 }
 
 function mapHttpError(providerId: string, status: number, body: string, url: string): HatsError {

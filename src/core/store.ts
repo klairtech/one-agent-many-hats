@@ -54,9 +54,19 @@ export async function writeTextAtomic(file: string, text: string): Promise<void>
   await fsp.rename(tmp, file);
 }
 
-export async function appendJsonl(file: string, record: unknown): Promise<void> {
+export async function appendJsonl(
+  file: string,
+  record: unknown,
+  opts: { mode?: number } = {},
+): Promise<void> {
   await ensureDir(path.dirname(file));
-  await fsp.appendFile(file, JSON.stringify(record) + '\n', 'utf8');
+  // `mode` only applies when appendFile creates the file, which is the case that matters:
+  // a store holding conversation content must never exist world-readable, not even for
+  // the moment between creation and a later chmod.
+  await fsp.appendFile(file, JSON.stringify(record) + '\n', {
+    encoding: 'utf8',
+    ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
+  });
 }
 
 /** Tolerant JSONL reader: a torn final line is skipped, not fatal. */
