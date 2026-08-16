@@ -135,6 +135,14 @@ table.grid td{padding:9px 0;border-top:1px solid var(--line)}
 @media (max-width:820px){
   aside{width:64px!important;padding:14px 8px 10px!important}
   aside .navlabel,aside .sidefoot,aside .brandtext{display:none}
+  /* The collapsed rail is one column of glyphs, and a count rendered inline pushed its own
+     icon out of that column — so the one row carrying a badge sat left of every other row.
+     Lift it out of the flow and pin it to the corner. */
+  aside .nv{justify-content:center;position:relative}
+  /* The mark sat against the left edge while every nav glyph below it centred on the rail,
+     so the one thing at the top of the column was the one thing out of line with it. */
+  aside .brandrow{justify-content:center;padding-left:0!important;padding-right:0!important}
+  aside .nv .nvbadge{position:absolute;top:3px;right:5px;min-width:15px;height:15px;font-size:10px}
   /* The wordmark is wider than the collapsed rail and was rendering clipped as "KLA".
      Show the square mark instead — it is the same brand at a size that fits. */
   aside .lg-l,aside .lg-d{display:none!important}
@@ -159,7 +167,7 @@ table.grid td{padding:9px 0;border-top:1px solid var(--line)}
   <div style="flex:1;min-height:0;display:flex;overflow:hidden">
 
     <aside aria-label="Main" style="width:236px;flex:none;display:flex;flex-direction:column;background:var(--surface);padding:16px 12px 12px;overflow-y:auto">
-      <div style="display:flex;align-items:center;gap:9px;flex:none;padding:0 6px 2px">
+      <div class="brandrow" style="display:flex;align-items:center;gap:9px;flex:none;padding:0 6px 2px">
         <img class="lg-l" src="/brand/klair-logo-dark.png" alt="Klair" style="height:26px;width:auto">
         <img class="lg-d" src="/brand/klair-logo-white.png" alt="" aria-hidden="true" style="height:26px;width:auto">
         <img class="mark" src="/brand/favicon-32.png" alt="Klair" style="display:none">
@@ -257,9 +265,9 @@ const ICONS = {
 
 const VIEWS = [
   { id: 'run', label: 'Chat', title: 'Chat', blurb: 'One agent, one transcript. Every answer carries the evidence it was built from, and every action passed the same gates.', load: () => renderRun() },
-  { id: 'outputs', label: 'Outputs', title: 'Outputs', blurb: 'The same files the agent can see, through the same path guard. Nothing here reaches further than it does.', load: () => loadFiles('.') },
+  { id: 'outputs', label: 'Outputs', title: 'Outputs', blurb: 'What it produced, newest first: the evidence behind each answer, and the files it wrote.', load: () => loadOutputs() },
   { id: 'memory', label: 'Memory', title: 'Memory', blurb: 'What it has been told, what it noticed, and what it learned from going wrong. Yours to edit or delete.', load: () => loadMemory() },
-  { id: 'proposals', label: 'Proposals', title: 'Proposals', blurb: 'What it wants to add. It writes these; only you promote them, and a tool never promotes itself.', load: () => loadProposals() },
+  { id: 'proposals', label: 'Proposals', title: 'Proposals', blurb: 'What it wants to add, and what it could not add on its own. Anything blocked says why.', load: () => loadProposals() },
   { id: 'registry', label: 'Registry', title: 'Skills, rules and tools', blurb: 'Behaviour composed from files you can read. Every rule above prompt strength names the code that enforces it.', load: () => loadRegistry() },
   { id: 'analytics', label: 'Analytics', title: 'Analytics', blurb: 'Read back from the run records already on your disk. Nothing is collected and nothing is sent.', load: () => loadAnalytics() },
   { id: 'space', label: 'Storage', title: 'Storage', blurb: 'What each part costs in megabytes, and what deleting it costs you. Those are different questions.', load: () => loadSpace() },
@@ -290,7 +298,7 @@ function renderNav() {
     b.setAttribute('aria-label', v.label);
     b.appendChild(st(el('span', 'navlabel', v.label), 'min-width:0;flex:1'));
     if (badges[v.id]) {
-      b.appendChild(st(el('span', 'num xs', String(badges[v.id])), 'flex:none;background:var(--warn);color:var(--canvas);border-radius:999px;min-width:17px;height:17px;display:grid;place-items:center;font-weight:700;padding:0 4px'));
+      b.appendChild(st(el('span', 'num xs nvbadge', String(badges[v.id])), 'flex:none;background:var(--warn);color:var(--canvas);border-radius:999px;min-width:17px;height:17px;display:grid;place-items:center;font-weight:700;padding:0 4px'));
     }
     b.onclick = () => go(v.id);
     nav.appendChild(b);
@@ -328,9 +336,7 @@ function go(id, opts) {
   $('#view-action').hidden = true;
   $('#view-icons').innerHTML = '';
   $('#view').innerHTML = '';
-  $('#view').setAttribute('style', id === 'outputs'
-    ? 'flex:1;min-height:0;display:flex;overflow:hidden;padding:0'
-    : 'flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;padding:20px 24px 44px');
+  $('#view').setAttribute('style', 'flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;padding:20px 24px 44px');
   renderNav();
   if (!opts || opts.push !== false) syncUrl();
   v.load();
@@ -354,7 +360,7 @@ const subTabState = {};
 function subTabs(host, viewId, tabs) {
   const bar = st(el('div'), 'display:flex;gap:3px;background:var(--surface);border-radius:999px;padding:3px;align-self:flex-start;max-width:100%;overflow-x:auto;flex:none');
   bar.setAttribute('role', 'tablist');
-  const body = st(el('div'), 'margin-top:20px');
+  const body = st(el('div'), 'margin-top:20px;flex:1;min-height:0;display:flex;flex-direction:column');
   host.appendChild(bar);
   host.appendChild(body);
 
@@ -1132,8 +1138,12 @@ function extBadge(kind, name, size) {
   return st(el('span', null, ext), 'flex:none;display:grid;place-items:center;width:' + (size || 32) + 'px;height:' + (size || 32) + 'px;border-radius:9px;background:' + tone[0] + ';color:' + tone[1] + ';font-size:8.5px;font-weight:700');
 }
 
-async function loadFiles(dirPath) {
-  const v = $('#view');
+async function loadFiles(dirPath, host) {
+  // The browser used to own the whole view. It is now one tab inside Outputs, so it renders
+  // into whatever it is given and keeps its own two-column layout there.
+  const v = host || FILES_HOST || $('#view');
+  FILES_HOST = v;
+  v.setAttribute('style', 'flex:1;min-height:0;display:flex;overflow:hidden;padding:0;border:1px solid var(--line);border-radius:14px');
   v.innerHTML = '';
   const listCol = st(el('div', 'filesplit-list'), 'width:300px;flex:none;display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--line)');
   const previewCol = st(el('div'), 'flex:1;min-width:0;display:flex;flex-direction:column;min-height:0');
@@ -1913,6 +1923,110 @@ async function telegramCard() {
   return card;
 }
 
+/**
+ * What the agent produced, grouped by the conversation that produced it.
+ *
+ * This view used to be the workspace file browser, and its own blurb admitted it: "the same
+ * files the agent can see". That is a reading surface with a producing name on it. The
+ * things it actually makes are artifacts — the evidence every cited number comes from — and
+ * the files it wrote, and neither was anywhere in the panel.
+ *
+ * The browser survives as a second tab, because pointing a run at a file is a real job.
+ */
+let FILES_HOST = null;
+
+/** The workspace browser, as a tab. */
+function paintFileBrowser(host) {
+  FILES_HOST = host;
+  loadFiles('.', host);
+}
+
+/** Open one file in the browser tab, from a link elsewhere. */
+async function openFile(relPath) {
+  const tab = [...document.querySelectorAll('[data-tabid]')].find((b) => b.dataset.tabid === 'files');
+  if (tab) tab.click();
+  await new Promise((r) => setTimeout(r, 120));
+  showPreview(relPath);
+}
+
+async function loadOutputs() {
+  const v = $('#view');
+  v.innerHTML = '';
+  const host = st(el('div'), 'max-width:1000px;flex:1;min-height:0;display:flex;flex-direction:column');
+  subTabs(host, 'outputs', [
+    { id: 'produced', label: 'Produced', render: (body) => paintProduced(body) },
+    { id: 'files', label: 'Workspace files', render: (body) => paintFileBrowser(body) },
+  ]);
+  v.appendChild(host);
+}
+
+async function paintProduced(host) {
+  host.innerHTML = '<p class="sm" style="color:var(--ink-2)">Loading…</p>';
+  const d = await api('/api/outputs');
+  host.innerHTML = '';
+  if (!d.runs.length) {
+    host.appendChild(st(el('p', 'sm', 'Nothing produced yet. Artifacts appear as soon as a run reads or computes anything — they are what its citations point at.'), 'color:var(--ink-2);text-wrap:pretty'));
+    return;
+  }
+
+  const wrap = st(el('div'), 'display:flex;flex-direction:column;gap:10px');
+  d.runs.forEach((r) => {
+    const card = st(el('section'), 'background:var(--surface);border-radius:14px;overflow:hidden');
+
+    const head = st(el('button'), 'display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:0;background:none;color:inherit;font-family:inherit;padding:13px 16px;cursor:pointer');
+    head.appendChild(statusPill(r.ok ? 'ok' : 'incomplete', r.ok ? 'ok' : 'warn'));
+    head.appendChild(st(el('span', 'sm', r.request || '(no request)'), 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'));
+    if (r.files.length) head.appendChild(st(el('span', 'xs', r.files.length + (r.files.length === 1 ? ' file' : ' files')), 'color:var(--ok);font-weight:600;flex:none'));
+    head.appendChild(st(el('span', 'xs num', r.artifacts.length + ' artifacts'), 'color:var(--ink-3);flex:none'));
+    head.appendChild(st(el('span', 'xs num', relativeTime(r.at)), 'color:var(--ink-3);flex:none'));
+    card.appendChild(head);
+
+    const body = st(el('div'), 'display:none;padding:0 16px 14px');
+    head.onclick = () => {
+      const open = body.style.display === 'block';
+      body.style.display = open ? 'none' : 'block';
+      if (!open && !body.dataset.built) buildOutputDetail(body, r);
+    };
+    card.appendChild(body);
+    wrap.appendChild(card);
+  });
+  host.appendChild(wrap);
+}
+
+function buildOutputDetail(host, r) {
+  host.dataset.built = '1';
+
+  // Files first: they are the part that outlives the run.
+  if (r.files.length) {
+    host.appendChild(st(el('p', 'xs', 'files written'), 'margin:8px 0 0;color:var(--ink-3);font-weight:600'));
+    const list = st(el('div'), 'display:flex;flex-direction:column;gap:4px;margin-top:5px');
+    r.files.forEach((f) => {
+      const b = st(el('button', 'xs mono'), 'text-align:left;border:0;background:none;color:var(--brand-strong);font-family:ui-monospace,monospace;cursor:pointer;padding:2px 0');
+      b.textContent = f;
+      b.onclick = () => { go('outputs'); setTimeout(() => openFile(f), 60); };
+      list.appendChild(b);
+    });
+    host.appendChild(list);
+  }
+
+  host.appendChild(st(el('p', 'xs', 'artifacts — what its citations point at'), 'margin:12px 0 0;color:var(--ink-3);font-weight:600'));
+  const list = st(el('div'), 'display:flex;flex-direction:column;gap:1px;margin-top:6px;background:var(--line);border-radius:10px;overflow:hidden');
+  r.artifacts.forEach((a) => {
+    const row = st(el('button'), 'display:flex;gap:9px;align-items:baseline;width:100%;text-align:left;border:0;background:var(--canvas);color:inherit;font-family:inherit;padding:8px 11px;cursor:pointer');
+    row.appendChild(st(el('span', 'xs mono', a.id), 'color:var(--brand-strong);flex:none'));
+    row.appendChild(st(el('span', 'xs', a.tool), 'color:var(--ink-3);flex:none'));
+    row.appendChild(st(el('span', 'xs', a.summary), 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2)'));
+    row.onclick = async () => {
+      try {
+        const d = await api('/api/artifact?runId=' + encodeURIComponent(r.runId) + '&id=' + encodeURIComponent(a.id));
+        await say(a.id, JSON.stringify(d.artifact.payload, null, 2).slice(0, 6000));
+      } catch (e) { await say('Could not open it', e.message); }
+    };
+    list.appendChild(row);
+  });
+  host.appendChild(list);
+}
+
 async function loadProposals() {
   const v = $('#view');
   v.innerHTML = '<p class="sm" style="color:var(--ink-2)">Loading…</p>';
@@ -1960,6 +2074,7 @@ function paintProposals(host, items, actionable) {
     head.appendChild(statusPill(x.kind, x.kind === 'tool' ? 'warn' : 'idle'));
     head.appendChild(st(el('span', 'sm', x.title), 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'));
     if (x.occurrences > 1) head.appendChild(st(el('span', 'xs num', x.occurrences + '×'), 'color:var(--ink-3);flex:none'));
+    if (actionable && x.blockedBecause) head.appendChild(statusPill('needs you', 'warn'));
     if (!actionable) head.appendChild(statusPill(x.status, x.status === 'promoted' ? 'ok' : 'dang'));
     const chev = st(el('span', 'xs'), 'color:var(--ink-3);flex:none');
     chev.textContent = '›';
@@ -1983,14 +2098,34 @@ function buildProposalDetail(host, x, actionable) {
   host.dataset.built = '1';
   host.appendChild(st(el('p', 'sm', x.rationale), 'margin:14px 0 0;color:var(--ink-2);text-wrap:pretty'));
 
-  if (x.kind === 'tool') {
-    host.appendChild(el('p', 'xs callout warn')).textContent =
-      'A tool never promotes itself at any autonomy level. Promoting a contract prints it for a human to implement; a patch is applied only after the build and the whole test suite pass.';
+  // Why automation left it alone. Without this a blocked proposal looked identical to one
+  // nobody had got to yet, and the difference is the whole reason it is still sitting here.
+  if (x.blockedBecause) {
+    const why = st(el('div'), 'margin:12px 0 0;padding:10px 13px;border-radius:11px;background:var(--surface);border-left:3px solid var(--warn)');
+    why.appendChild(st(el('p', 'xs', 'not promoted automatically'), 'margin:0;color:var(--ink-3);font-weight:600'));
+    why.appendChild(st(el('p', 'sm'), 'margin:4px 0 0;color:var(--ink-2);text-wrap:pretty')).textContent = x.blockedBecause.reason;
+    host.appendChild(why);
   }
 
-  const pre = st(el('pre', 'mono xs'), 'margin:12px 0 0;background:var(--surface);border-radius:10px;padding:13px 15px;overflow:auto;max-height:320px;line-height:1.6');
-  pre.textContent = x.content;
-  host.appendChild(pre);
+  // What happens if you press the button, per kind. The old text said a tool never promotes
+  // itself at any level, which stopped being true at ADR-0011 and was the most load-bearing
+  // sentence on the page.
+  const note =
+    x.defect
+      ? 'A tool that keeps failing the same way. Repairing it starts a run that reads the handler and proposes a patch — applied only if the build and the whole test suite pass, reverted otherwise.'
+      : x.patch
+        ? 'A repair to an existing tool. Applied only after the build and the entire test suite pass; reverted on either failure.'
+        : x.implementation
+          ? 'Carries a working handler' + (x.ephemeral ? ', built for one conversation and kept only so you can adopt it deliberately.' : '. Promoting installs it, under the permissions it declared.')
+          : x.kind === 'tool'
+            ? 'Describes a tool but carries no handler, so promotion can only record the contract. build_tool writes one that installs.'
+            : '';
+  if (note) host.appendChild(el('p', 'xs callout warn')).textContent = note;
+
+  const doc = st(el('div', 'md'), 'margin:12px 0 0;background:var(--surface);border-radius:10px;padding:13px 16px;overflow:auto;max-height:340px');
+  if (x.html) doc.innerHTML = x.html;
+  else doc.appendChild(st(el('pre', 'mono xs'), 'margin:0;white-space:pre-wrap')).textContent = x.content;
+  host.appendChild(doc);
 
   if (!actionable) return;
   const row = st(el('div'), 'display:flex;flex-wrap:wrap;gap:8px;margin-top:14px');
@@ -2003,6 +2138,20 @@ function buildProposalDetail(host, x, actionable) {
     } catch (e) { await say('Refused', e.message); }
     loadProposals(); loadState();
   };
+  if (x.defect) {
+    const fix = el('button', 'btn1 btnsm', 'Attempt a repair');
+    fix.title = 'Start a run that reads the handler and proposes a patch';
+    fix.onclick = async () => {
+      fix.disabled = true;
+      try {
+        await post('/api/proposal', { id: x.id, action: 'repair' });
+        await say('Repairing ' + x.defect.tool, 'A run is reading the handler now. Watch it in Chat — the patch applies only if the build and the whole test suite pass.');
+        go('run');
+      } catch (e) { fix.disabled = false; await say('Could not start the repair', e.message); }
+    };
+    row.appendChild(fix);
+  }
+
   const rej = el('button', 'btn3 btnsm', 'Reject');
   rej.onclick = async () => {
     if (!(await ask('Reject this proposal?', x.title, 'Reject', true))) return;

@@ -48,6 +48,19 @@ export interface Proposal {
    */
   implementation?: { tool: import('../tools/generated/store.js').GeneratedTool; code: string };
   /**
+   * Why auto-promotion left this alone, in the words it used at the time.
+   *
+   * It was computed and logged and nowhere else, so on the page a blocked proposal was
+   * indistinguishable from one nobody had got to yet — which reads as the feature quietly
+   * not working rather than as a decision with a reason.
+   */
+  blockedBecause?: { reason: string; at: string };
+  /**
+   * A tool that keeps failing the same way. Carries the tool's name so the panel can offer
+   * a repair rather than leaving a report nobody is going to action.
+   */
+  defect?: { tool: string };
+  /**
    * ADR-0011: the author asked for this to live only as long as the conversation.
    *
    * The implementation is still recorded, so a person can adopt it later with
@@ -120,10 +133,23 @@ export async function listProposals(root = registryDir()): Promise<Proposal[]> {
   for (const kind of ['skill', 'rule', 'tool'] as const) {
     for (const file of await listFiles(proposalsDir(kind, root), '.json')) {
       const p = await readJson<Proposal | null>(file, null);
-      if (p) out.push(p);
+      if (p) out.push(withInferredDefect(p));
     }
   }
   return out.sort((a, b) => b.occurrences - a.occurrences || b.updatedAt.localeCompare(a.updatedAt));
+}
+
+/**
+ * A defect report staged before defects carried the tool's name still describes one.
+ *
+ * Inferred from the title rather than migrated on disk: a report that has been sitting
+ * there for weeks is exactly the one worth being able to act on, and rewriting every old
+ * proposal to add a field is a bigger promise than reading it back.
+ */
+function withInferredDefect(p: Proposal): Proposal {
+  if (p.kind !== 'tool' || p.defect) return p;
+  const named = /^([a-z][a-z0-9_]*) keeps failing the same way$/.exec(p.title.trim());
+  return named ? { ...p, defect: { tool: named[1] as string } } : p;
 }
 
 export async function getProposal(id: string, root = registryDir()): Promise<Proposal> {
@@ -135,6 +161,21 @@ export async function getProposal(id: string, root = registryDir()): Promise<Pro
     });
   }
   return found;
+}
+
+/** Records why automation declined, without changing the proposal's status. */
+export async function noteBlocked(
+  id: string,
+  reason: string,
+  root = registryDir(),
+): Promise<void> {
+  const p = await getProposal(id, root).catch(() => null);
+  if (!p) return;
+  if (p.blockedBecause?.reason === reason) return;
+  await writeJsonAtomic(proposalPath(p.kind, p.id, root), {
+    ...p,
+    blockedBecause: { reason, at: utcStamp() },
+  });
 }
 
 export async function setProposalStatus(

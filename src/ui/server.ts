@@ -546,8 +546,90 @@ export async function startUi(
         return json(res, 200, { ok: true });
       }
 
-      case 'GET /api/proposals':
-        return json(res, 200, { proposals: await listProposals() });
+      case 'GET /api/outputs': {
+        // What the agent produced, per conversation.
+        //
+        // "Outputs" used to be the workspace file browser, whose own blurb said it showed
+        // the files the agent can *see* — a reading surface labelled as a producing one. The
+        // things it actually makes are artifacts, which are its evidence, and the files it
+        // wrote. Both are already on disk; nothing here was being shown.
+        const dir = path.join(workspaceDir(session.slug), 'runs');
+        const fsp = await import('node:fs/promises');
+        const ids = (await fsp.readdir(dir).catch(() => [])).sort().reverse().slice(0, 40);
+
+        const WRITERS = new Set(['write_file', 'apply_patch']);
+        const runs = [];
+        for (const id of ids) {
+          const record = await readJson<Record<string, unknown> | null>(
+            path.join(dir, id, 'run.json'),
+            null,
+          );
+          if (!record) continue;
+
+          const observations = (record['observations'] ?? []) as Array<{
+            tool?: string;
+            artifactId?: string;
+            summary?: string;
+            ok?: boolean;
+          }>;
+          const artifacts = observations
+            .filter((o) => o.artifactId)
+            .map((o) => ({ id: o.artifactId, tool: o.tool ?? '?', summary: (o.summary ?? '').slice(0, 160) }));
+
+          // Written paths come from the audit trail rather than the run record, because the
+          // record keeps the observation and the audit keeps the arguments — and the path is
+          // an argument.
+          const audit = await fsp.readFile(path.join(dir, id, 'audit.jsonl'), 'utf8').catch(() => '');
+          const files = [
+            ...new Set(
+              audit
+                .split('\n')
+                .filter((l) => l.includes('tool.call'))
+                .map((l) => {
+                  try {
+                    return JSON.parse(l) as { tool?: string; args?: Record<string, unknown> };
+                  } catch {
+                    return null;
+                  }
+                })
+                .filter((e): e is { tool?: string; args?: Record<string, unknown> } => e !== null)
+                .filter((e) => e.tool && WRITERS.has(e.tool))
+                .map((e) => String(e.args?.['path'] ?? e.args?.['file'] ?? ''))
+                .filter(Boolean),
+            ),
+          ];
+
+          if (!artifacts.length && !files.length) continue;
+          runs.push({
+            runId: id,
+            request: record['request'] ?? '',
+            at: record['startedAt'] ?? '',
+            ok: record['ok'] === true,
+            files,
+            artifacts,
+          });
+        }
+        return json(res, 200, { runs, root: session.workspaceRoot });
+      }
+
+      case 'GET /api/artifact': {
+        const runId = url.searchParams.get('runId') ?? '';
+        const id = url.searchParams.get('id') ?? '';
+        if (!/^[\w.-]+$/.test(runId) || !/^[\w]+$/.test(id)) return json(res, 400, { error: 'bad id' });
+        const file = path.join(workspaceDir(session.slug), 'runs', runId, 'artifacts', `${id}.json`);
+        const artifact = await readJson<Record<string, unknown> | null>(file, null);
+        if (!artifact) return json(res, 404, { error: 'NOT_FOUND' });
+        return json(res, 200, { artifact });
+      }
+
+      case 'GET /api/proposals': {
+        // The body of a proposal is a markdown document — a skill, a rule, or a defect
+        // report — and the panel was showing it as preformatted text, so the reader got
+        // literal hashes and asterisks in the one place they are being asked to judge a
+        // document on its merits. Rendered here because the renderer already lives here.
+        const proposals = (await listProposals()).map((p) => ({ ...p, html: renderMarkdown(p.content) }));
+        return json(res, 200, { proposals });
+      }
 
       case 'POST /api/proposal': {
         const body = (await readBody(req)) as { id?: string; action?: string };
@@ -560,6 +642,34 @@ export async function startUi(
         if (body.action === 'reject') {
           await setProposalStatus(body.id, 'rejected');
           return json(res, 200, { ok: true });
+        }
+
+        // Attempt a repair. The miner can spot a tool failing the same way and gather the
+        // evidence; it cannot read a handler or write a fix, because it has no model. So
+        // the report becomes the *request* for an ordinary run, which does have both —
+        // and whose patch is gated by the build and the whole test suite like any other.
+        if (body.action === 'repair') {
+          const proposal = await getProposal(body.id);
+          const tool = proposal.defect?.tool;
+          if (!tool) return json(res, 400, { error: 'NOT_A_DEFECT', message: 'that proposal is not a tool defect' });
+          const live = startRun(
+            [
+              `The tool \`${tool}\` keeps failing the same way and it is costing every run that uses it.`,
+              '',
+              'Read its handler under src/tools/builtin/, work out why, and call propose_patch with a fix.',
+              'You may change what the tool does; you may not change what it is allowed to do, and an',
+              'attempt to edit mutating, network or minProfile is refused. The patch applies only if the',
+              'build and the entire test suite pass, so propose the fix you believe in.',
+              '',
+              'If the handler looks correct and the model keeps misusing it, the defect is the tool',
+              'description — patch that instead, and say so.',
+              '',
+              '## The evidence',
+              '',
+              proposal.content,
+            ].join('\n'),
+          );
+          return json(res, 200, { runId: live.runId });
         }
         return json(res, 200, { proposal: await getProposal(body.id) });
       }

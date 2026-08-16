@@ -91,30 +91,40 @@ export async function mineProposals(
   const generic = runs.filter((r) => r.outcomeId === 'outcome/answer' && r.request);
   const requestGroups = group(generic.map((r) => ({ text: r.request as string, run: r })));
   for (const g of requestGroups) {
-    if (g.items.length < threshold || alreadyProposed(g.label)) continue;
+    // Distinct requests, not repetitions of one.
+    //
+    // Grouping already collapses different wordings of the same work, which is what makes
+    // it useful — and it also collapsed three near-identical phrasings of a single
+    // throwaway question into "three occurrences", so a test prompt became a skill draft
+    // titled after itself. Asking the same thing three times is evidence that you asked
+    // three times, not that a playbook is missing.
+    const distinct = distinctRequests(g.items.map((i) => i.text));
+    if (distinct < threshold || alreadyProposed(g.label)) continue;
     const failures = g.items.filter((i) => i.run.ok === false).length;
     const proposal = await stageProposal({
       kind: 'skill',
       title: g.label,
       rationale:
-        `${g.items.length} runs have asked for this kind of work and all routed to the generic ` +
+        `${distinct} differently-worded requests have asked for this kind of work and all routed to the generic ` +
         `outcome/answer, which has no playbook for it` +
         (failures ? `; ${failures} did not complete` : '') +
         `. Requests: ${unique(g.items.map((i) => i.text)).slice(0, 4).map((t) => `"${t.slice(0, 80)}"`).join(' · ')}.`,
       content: skillDraft(g.label, unique(g.items.map((i) => i.text))),
       evidence: g.items.map((i) => `${i.run.runId ?? 'unknown'}: ${oneLine(i.text)}`).slice(0, 12),
     });
-    out.push({ kind: 'skill', title: g.label, occurrences: g.items.length, proposalId: proposal.id });
+    out.push({ kind: 'skill', title: g.label, occurrences: distinct, proposalId: proposal.id });
   }
 
   // --- a tool that keeps failing the same way is a defect, not bad luck ---
   //
-  // The agent cannot fix a tool: ADR-0006 keeps tool code in human hands, and that is the
-  // right call. But until this existed it could not even *report* one — it would hit the
-  // same failure every run, recover within the run, and leave nothing behind. Four
-  // consecutive runs fought the same browser_act locator bug and the fifth started fresh.
-  // This is self-healing in the only form the architecture permits: notice, gather the
-  // evidence, and put it in front of someone who can change the code.
+  // This used to end at a report. That was right under ADR-0006, where tool code was in
+  // human hands, and it stopped being right at ADR-0010, when the agent gained the ability
+  // to read a handler and patch it behind the build and the whole test suite. Nobody
+  // reconnected the two, so the system noticed the same broken browser_act eleven times
+  // across nine runs and filed eleven notes about it.
+  //
+  // The report still exists, because the evidence is the useful part. What changes is that
+  // it now names the tool, so a repair can be *attempted* from it.
   const failures = runs.flatMap((r) =>
     (r.observations ?? [])
       .filter((o) => {
@@ -144,6 +154,7 @@ export async function mineProposals(
         `Recovering inside each run costs steps and money every single time.`,
       content: failureReport(tool, g.items.map((i) => ({ text: i.text, runId: i.run.runId }))),
       evidence: g.items.map((i) => `${i.run.runId ?? 'unknown'}: ${oneLine(i.text)}`).slice(0, 12),
+      defect: { tool },
     });
     out.push({ kind: 'tool', title: proposal.title, occurrences: g.items.length, proposalId: proposal.id });
   }
@@ -168,8 +179,11 @@ function failureReport(tool: string, items: Array<{ text: string; runId?: string
   return [
     `# ${tool} is failing repeatedly`,
     '',
-    'This is a **defect report**, not a request for a new tool. Nothing here changes until a',
-    'person looks at the handler.',
+    'This is a **defect report**, not a request for a new tool.',
+    '',
+    'It can be repaired from here: the agent reads the handler and proposes a patch, which',
+    'applies only if the build and the entire test suite still pass, and reverts otherwise.',
+    'It may change what the tool does. It may not change what the tool is allowed to do.',
     '',
     '## What happened',
     '',
@@ -252,6 +266,25 @@ function tokens(text: string): Set<string> {
       .split(/\s+/)
       .filter((w) => w.length > 2 && !STOP.has(w)),
   );
+}
+
+/**
+ * How many genuinely different requests are in here.
+ *
+ * Same greedy bucketing as `group`, at a much higher threshold: within a group everything
+ * is similar by construction, so this asks the narrower question of whether two members are
+ * the *same sentence* with a value swapped. "Remember this codename: PELICAN-42" and
+ * "Remember this codename: OSPREY-77" are one request, twice.
+ */
+function distinctRequests(texts: string[]): number {
+  const seen: Array<Set<string>> = [];
+  for (const text of texts) {
+    const t = tokens(text);
+    if (t.size === 0) continue;
+    if (seen.some((s) => similar(s, t) >= 0.85)) continue;
+    seen.push(t);
+  }
+  return seen.length;
 }
 
 function similar(a: Set<string>, b: Set<string>): number {
