@@ -265,3 +265,121 @@ test('only a thrown error counts as a tool malfunction', async () => {
     await cleanup(home);
   }
 });
+
+/**
+ * Asking the same thing three times is evidence that you asked three times.
+ *
+ * The grouping that collapses different wordings of the same work also collapsed three
+ * near-identical phrasings of one throwaway question, so a test prompt — "Remember this
+ * codename for later: PELICAN-42" — became a skill draft titled after itself.
+ */
+test('a single request repeated is not a missing skill', async () => {
+  const home = await tempHome();
+  try {
+    const { mineProposals } = await import('../src/engine/mine.js');
+    const { listProposals } = await import('../src/registry/proposals.js');
+    const { workspaceDir } = await import('../src/core/paths.js');
+    const { ensureDir, writeJsonAtomic } = await import('../src/core/store.js');
+    const pathMod = await import('node:path');
+    const { testConfig } = await import('./helpers.js');
+
+    const slug = 'ws-test';
+    const askedThrice = [
+      'Remember this codename for later: PELICAN-42. Acknowledge in one short line.',
+      'Remember this codename for later: OSPREY-77. Acknowledge in one short line.',
+      'Remember this codename for later: KESTREL-13. Acknowledge in one short line.',
+    ];
+    for (let i = 0; i < askedThrice.length; i++) {
+      const dir = await ensureDir(pathMod.join(workspaceDir(slug), 'runs', `same${i}`));
+      await writeJsonAtomic(pathMod.join(dir, 'run.json'), {
+        runId: `same${i}`,
+        request: askedThrice[i],
+        outcomeId: 'outcome/answer',
+        ok: true,
+        observations: [],
+      });
+    }
+
+    await mineProposals(slug, testConfig());
+    const skills = (await listProposals()).filter((p) => p.kind === 'skill');
+    assert.deepEqual(skills, [], `one question asked three ways became a skill: ${skills.map((s) => s.title).join(', ')}`);
+  } finally {
+    await cleanup(home);
+  }
+});
+
+/** Genuinely different requests converging on the same work still earn a playbook. */
+test('different requests for the same work still propose a skill', async () => {
+  const home = await tempHome();
+  try {
+    const { mineProposals } = await import('../src/engine/mine.js');
+    const { listProposals } = await import('../src/registry/proposals.js');
+    const { workspaceDir } = await import('../src/core/paths.js');
+    const { ensureDir, writeJsonAtomic } = await import('../src/core/store.js');
+    const pathMod = await import('node:path');
+    const { testConfig } = await import('./helpers.js');
+
+    const slug = 'ws-test';
+    // Similar enough to group as one kind of work, different enough to be three requests
+    // rather than one sentence with a value swapped.
+    const varied = [
+      'total the incident durations by service',
+      'incident durations grouped by service, summed',
+      'which service has the largest incident duration total',
+    ];
+    for (let i = 0; i < varied.length; i++) {
+      const dir = await ensureDir(pathMod.join(workspaceDir(slug), 'runs', `vary${i}`));
+      await writeJsonAtomic(pathMod.join(dir, 'run.json'), {
+        runId: `vary${i}`,
+        request: varied[i],
+        outcomeId: 'outcome/answer',
+        ok: true,
+        observations: [],
+      });
+    }
+
+    await mineProposals(slug, testConfig());
+    const skills = (await listProposals()).filter((p) => p.kind === 'skill');
+    assert.equal(skills.length, 1, 'three different wordings of one job should propose a playbook');
+  } finally {
+    await cleanup(home);
+  }
+});
+
+/**
+ * A recurring tool failure has to carry the tool's name, because that is what turns a
+ * report nobody actions into a repair the agent can attempt (ADR-0010 reconnected).
+ */
+test('a defect report names the tool so it can be repaired', async () => {
+  const home = await tempHome();
+  try {
+    const { mineProposals } = await import('../src/engine/mine.js');
+    const { listProposals } = await import('../src/registry/proposals.js');
+    const { workspaceDir } = await import('../src/core/paths.js');
+    const { ensureDir, writeJsonAtomic } = await import('../src/core/store.js');
+    const pathMod = await import('node:path');
+    const { testConfig } = await import('./helpers.js');
+
+    const slug = 'ws-test';
+    for (let i = 0; i < 4; i++) {
+      const dir = await ensureDir(pathMod.join(workspaceDir(slug), 'runs', `broken${i}`));
+      await writeJsonAtomic(pathMod.join(dir, 'run.json'), {
+        runId: `broken${i}`,
+        request: `unrelated ${i}`,
+        outcomeId: 'outcome/investigate',
+        ok: true,
+        observations: [{ tool: 'browser_act', ok: false, errorCode: 'TOOL_FAILED', summary: 'nothing matches "x"' }],
+      });
+    }
+
+    await mineProposals(slug, testConfig());
+    const defect = (await listProposals()).find((p) => p.title.includes('browser_act'));
+    assert.ok(defect, 'the defect was not staged');
+    assert.equal(defect.defect?.tool, 'browser_act');
+    // The old report told the reader nothing changes until a person looks at the handler.
+    assert.ok(!/until a\s+person looks/.test(defect.content), 'the report still claims a human is the only route');
+    assert.match(defect.content, /propose[s]? a patch|proposes a patch/);
+  } finally {
+    await cleanup(home);
+  }
+});

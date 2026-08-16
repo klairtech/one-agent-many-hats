@@ -19,7 +19,7 @@
 
 import type { Autonomy, HatsConfig } from '../core/config.js';
 import { Logger, nullLogger } from '../core/logger.js';
-import { isRevision, listProposals, promoteProposal, type Proposal } from '../registry/proposals.js';
+import { isRevision, listProposals, noteBlocked, promoteProposal, type Proposal } from '../registry/proposals.js';
 
 const RUNGS: Array<Autonomy['level']> = ['supervised', 'adaptive', 'self-healing', 'self-extending'];
 
@@ -61,18 +61,12 @@ export async function runAutoPromotion(
         // "nothing was installed on the device" false a few seconds after it was said.
         if (proposal.ephemeral) {
           result.blocked.push(proposal);
-          result.notes.push({
-            id: proposal.id,
-            detail: 'built for one conversation; promote it by hand if you want to keep it',
-          });
+          await note(proposal, 'built for one conversation; promote it by hand if you want to keep it');
           continue;
         }
         if (!atLeast(level, 'self-extending')) {
           result.blocked.push(proposal);
-          result.notes.push({
-            id: proposal.id,
-            detail: 'a written tool installs at autonomy level self-extending; this machine is lower',
-          });
+          await note(proposal, 'a written tool installs at autonomy level self-extending; this machine is lower');
           continue;
         }
         if (proposal.occurrences < 1) {
@@ -84,10 +78,7 @@ export async function runAutoPromotion(
       }
       // A contract with no handler still needs someone to write one.
       result.blocked.push(proposal);
-      result.notes.push({
-        id: proposal.id,
-        detail: 'describes a tool but carries no handler — build_tool writes one that can install',
-      });
+      await note(proposal, 'describes a tool but carries no handler — build_tool writes one that can install');
       continue;
     }
 
@@ -125,6 +116,12 @@ export async function runAutoPromotion(
     await attempt(proposal);
   }
 
+  /** Carried out for the caller and written onto the proposal, so the panel can show it. */
+  async function note(proposal: Proposal, detail: string): Promise<void> {
+    result.notes.push({ id: proposal.id, detail });
+    await noteBlocked(proposal.id, detail);
+  }
+
   async function attempt(proposal: (typeof drafts)[number]): Promise<void> {
     try {
       const outcome = await promoteProposal(proposal.id);
@@ -143,7 +140,7 @@ export async function runAutoPromotion(
       const detail = (e as Error).message;
       logger.warn('autonomy.promote.failed', { id: proposal.id, error: detail });
       result.waiting.push({ proposal, needs: 0 });
-      result.notes.push({ id: proposal.id, detail });
+      await note(proposal, detail);
     }
   }
   return result;

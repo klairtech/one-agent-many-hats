@@ -546,8 +546,14 @@ export async function startUi(
         return json(res, 200, { ok: true });
       }
 
-      case 'GET /api/proposals':
-        return json(res, 200, { proposals: await listProposals() });
+      case 'GET /api/proposals': {
+        // The body of a proposal is a markdown document — a skill, a rule, or a defect
+        // report — and the panel was showing it as preformatted text, so the reader got
+        // literal hashes and asterisks in the one place they are being asked to judge a
+        // document on its merits. Rendered here because the renderer already lives here.
+        const proposals = (await listProposals()).map((p) => ({ ...p, html: renderMarkdown(p.content) }));
+        return json(res, 200, { proposals });
+      }
 
       case 'POST /api/proposal': {
         const body = (await readBody(req)) as { id?: string; action?: string };
@@ -560,6 +566,34 @@ export async function startUi(
         if (body.action === 'reject') {
           await setProposalStatus(body.id, 'rejected');
           return json(res, 200, { ok: true });
+        }
+
+        // Attempt a repair. The miner can spot a tool failing the same way and gather the
+        // evidence; it cannot read a handler or write a fix, because it has no model. So
+        // the report becomes the *request* for an ordinary run, which does have both —
+        // and whose patch is gated by the build and the whole test suite like any other.
+        if (body.action === 'repair') {
+          const proposal = await getProposal(body.id);
+          const tool = proposal.defect?.tool;
+          if (!tool) return json(res, 400, { error: 'NOT_A_DEFECT', message: 'that proposal is not a tool defect' });
+          const live = startRun(
+            [
+              `The tool \`${tool}\` keeps failing the same way and it is costing every run that uses it.`,
+              '',
+              'Read its handler under src/tools/builtin/, work out why, and call propose_patch with a fix.',
+              'You may change what the tool does; you may not change what it is allowed to do, and an',
+              'attempt to edit mutating, network or minProfile is refused. The patch applies only if the',
+              'build and the entire test suite pass, so propose the fix you believe in.',
+              '',
+              'If the handler looks correct and the model keeps misusing it, the defect is the tool',
+              'description — patch that instead, and say so.',
+              '',
+              '## The evidence',
+              '',
+              proposal.content,
+            ].join('\n'),
+          );
+          return json(res, 200, { runId: live.runId });
         }
         return json(res, 200, { proposal: await getProposal(body.id) });
       }
