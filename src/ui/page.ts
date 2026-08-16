@@ -277,7 +277,7 @@ const ICONS = {
 
 const VIEWS = [
   { id: 'run', label: 'Chat', title: 'Chat', blurb: 'One agent, one transcript. Every answer carries the evidence it was built from, and every action passed the same gates.', load: () => renderRun() },
-  { id: 'outputs', label: 'Outputs', title: 'Outputs', blurb: 'What it produced, newest first: the evidence behind each answer, and the files it wrote.', load: () => loadOutputs() },
+  { id: 'outputs', label: 'Outputs', title: 'Outputs', blurb: 'Files the agent wrote, newest first. Evidence it merely read or computed stays in the conversation.', load: () => loadOutputs() },
   { id: 'memory', label: 'Memory', title: 'Memory', blurb: 'What it has been told, what it noticed, and what it learned from going wrong. Yours to edit or delete.', load: () => loadMemory() },
   { id: 'proposals', label: 'Proposals', title: 'Proposals', blurb: 'What it wants to add, and what it could not add on its own. Anything blocked says why.', load: () => loadProposals() },
   { id: 'registry', label: 'Registry', title: 'Skills, rules and tools', blurb: 'Behaviour composed from files you can read. Every rule above prompt strength names the code that enforces it.', load: () => loadRegistry() },
@@ -858,7 +858,7 @@ function openSandboxCard(host, code, before) {
   state.textContent = 'running';
   head.appendChild(state);
 
-  const pre = st(el('pre', 'mono'), 'margin:0;padding:15px 17px;overflow-x:auto;line-height:1.62;font-size:12.5px;color:#cdd6e4;max-height:360px');
+  const pre = st(el('pre', 'mono'), 'margin:0;padding:15px 17px;overflow-x:auto;line-height:1.62;font-size:12.5px;color:#cdd6e4');
   pre.innerHTML = highlightJs(source);
 
   const copy = el('button', 'xs');
@@ -883,8 +883,7 @@ function openSandboxCard(host, code, before) {
   };
   head.appendChild(copy);
   card.appendChild(head);
-
-  card.appendChild(pre);
+  card.appendChild(collapsible(pre, source.split('\\n').length, 'lines of code'));
 
   // Inserted above the answer rather than appended, because the answer element is created
   // empty at the start and filled at the end: appending would put every piece of working
@@ -894,20 +893,68 @@ function openSandboxCard(host, code, before) {
   return { card, state };
 }
 
-function closeSandboxCard(handle, data) {
+/**
+ * Long blocks fold to a preview with a toggle.
+ *
+ * A run that reaches for the sandbox four times used to produce four full screens of code
+ * and four of output, so the answer they were all working towards sat somewhere below the
+ * fold and the thread became unreadable. The content is all still here — folded, not cut,
+ * which is the difference between a summary and a truncation.
+ */
+function collapsible(inner, count, noun, foldOver = 14) {
+  if (count <= foldOver) return inner;
+
+  const box = st(el('div'), 'position:relative');
+  st(inner, inner.getAttribute('style') + ';max-height:230px;overflow:hidden');
+  box.appendChild(inner);
+
+  const fade = st(el('div'), 'position:absolute;left:0;right:0;bottom:0;height:56px;pointer-events:none;background:linear-gradient(rgba(35,42,53,0),#232a35)');
+  box.appendChild(fade);
+
+  const toggle = el('button', 'xs');
+  toggle.textContent = 'Show all ' + count + ' ' + noun;
+  st(toggle, 'display:block;width:100%;border:0;border-top:1px solid #333c4a;background:#1c222c;color:#8b97a8;font-family:inherit;font-size:11.5px;padding:7px;cursor:pointer');
+  toggle.onclick = () => {
+    const folded = fade.style.display !== 'none';
+    inner.style.maxHeight = folded ? 'none' : '230px';
+    fade.style.display = folded ? 'none' : 'block';
+    toggle.textContent = folded ? 'Show less' : 'Show all ' + count + ' ' + noun;
+  };
+
+  const wrap = st(el('div'), '');
+  wrap.appendChild(box);
+  wrap.appendChild(toggle);
+  return wrap;
+}
+
+async function closeSandboxCard(handle, data, runId) {
   const ok = data.ok !== false;
   handle.state.textContent = '';
   handle.state.appendChild(statusPill(ok ? 'returned' : 'rejected', ok ? 'ok' : 'dang'));
 
-  const out = String(data.output || '').trim();
-  if (!out) return;
+  // The whole result, not the bounded one.
+  //
+  // shapeText trims the observation the *model* sees, for context and cost, and that is a
+  // real constraint. It is not this reader's constraint: the artifact on disk holds the
+  // payload in full, so the panel was cutting off something it already had — and cutting it
+  // mid-token, which reads as the tool having failed halfway.
+  let text = String(data.output || '').trim();
+  if (ok && data.artifactId && runId) {
+    try {
+      const d = await api('/api/artifact?runId=' + encodeURIComponent(runId) + '&id=' + encodeURIComponent(data.artifactId));
+      const payload = d.artifact && d.artifact.payload;
+      if (payload !== undefined) text = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+    } catch (e) {
+      /* the bounded summary is a fair fallback */
+    }
+  }
+  if (!text) return;
+
   const wrap = st(el('div'), 'border-top:1px solid #333c4a;background:#1c222c');
-  wrap.appendChild(st(el('p', 'xs', ok ? 'result' : 'rejected'), 'margin:0;padding:9px 17px 0;color:#8b97a8;font-weight:600'));
-  const pre = st(el('pre', 'mono'), 'margin:0;padding:5px 17px 14px;overflow-x:auto;line-height:1.6;font-size:12.5px;color:' + (ok ? '#a9dcc8' : '#e9a8a8') + ';max-height:260px;text-wrap:wrap;word-break:break-word');
-  // The summary is already bounded by the executor; this is belt and braces so one very
-  // wide line cannot push the composer off screen.
-  pre.textContent = out.length > 4000 ? out.slice(0, 4000) + '\\n...' : out;
-  wrap.appendChild(pre);
+  wrap.appendChild(st(el('p', 'xs', ok ? 'returned' : 'rejected'), 'margin:0;padding:9px 17px 0;color:#8b97a8;font-weight:600'));
+  const pre = st(el('pre', 'mono'), 'margin:0;padding:5px 17px 14px;overflow-x:auto;line-height:1.6;font-size:12.5px;color:' + (ok ? '#a9dcc8' : '#e9a8a8') + ';text-wrap:wrap;word-break:break-word');
+  pre.textContent = text;
+  wrap.appendChild(collapsible(pre, text.split('\\n').length, 'lines'));
   handle.card.appendChild(wrap);
 }
 
@@ -988,7 +1035,7 @@ async function doSend() {
     // anything if you can see the computation.
     if (ev.type === 'tool' && ev.data && ev.data.tool === 'sandbox_run') {
       if (ev.data.code) sandboxCard = openSandboxCard(body, ev.data.code, answer);
-      else if (sandboxCard) { closeSandboxCard(sandboxCard, ev.data); sandboxCard = null; }
+      else if (sandboxCard) { closeSandboxCard(sandboxCard, ev.data, runId); sandboxCard = null; }
     }
 
     const line = st(el('div', 'xs'), 'display:flex;gap:9px;color:var(--ink-3);padding:1px 0');

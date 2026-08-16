@@ -60,6 +60,45 @@ export function completionClaimed(draft: string, observations: ToolObservation[]
   return { ok: true, detail: `${sentences.length} completeness claim(s), no failed tool calls` };
 }
 
+/** Language that promises a file exists: "ready for download", "attached", "saved to". */
+const PROMISES_A_FILE =
+  /\b(ready (for|to) (download|share)|available (for|to) download|attached|i(?:'ve| have) (?:written|created|saved|generated) (?:the |a |an )?(?:file|document|report|deck|presentation|spreadsheet|csv)|saved (?:it |them )?to|download (?:the|them|it)|find (?:it|them) (?:in|at))\b/i;
+
+/**
+ * The answer says a file is waiting and no file was written.
+ *
+ * A research run produced a fundraising strategy, called three sandbox snippets that
+ * returned JSON objects, and closed with "three detailed strategy artifacts are ready for
+ * download". Nothing had been written: the active skill has no `write_file`, so it could
+ * not have been. The reader goes looking for a document that was never going to exist.
+ *
+ * An artifact is not a file. It is the evidence a citation points at, it lives inside the
+ * run record, and the distinction is invisible from the answer unless the answer keeps it.
+ */
+export function promisedFileNotWritten(
+  draft: string,
+  observations: ToolObservation[],
+): ClaimCheck {
+  const wrote = observations.some(
+    (o) => o.ok && (o.tool === 'write_file' || o.tool === 'apply_patch'),
+  );
+  if (wrote) return { ok: true, detail: 'a file really was written' };
+
+  const sentence = draft
+    .split(/(?<=[.!?])\s+|\n/)
+    .find((s) => PROMISES_A_FILE.test(s) && !/no file|nothing was written|could not write/i.test(s));
+  if (!sentence) return { ok: true, detail: 'the answer promises no file' };
+
+  return {
+    ok: false,
+    detail:
+      `the answer says a file is waiting ("${sentence.trim().slice(0, 120)}") but nothing was ` +
+      `written in this run. An artifact is evidence inside the run record, not a document ` +
+      `someone can open. Either write the file, or say plainly that the content is in the ` +
+      `answer and no file exists.`,
+  };
+}
+
 /** Asking the human to hand over values: "please provide", "I need you to supply". */
 const REQUESTS_INPUT =
   /\b(please (provide|supply|share|enter|give|confirm)|to (proceed|continue|answer|connect)[,:]? (please )?(provide|supply|i (will |would )?need)|i (will |would )?need (you to (provide|supply|give)|the following|access to)|could you (provide|supply|share))\b/i;
