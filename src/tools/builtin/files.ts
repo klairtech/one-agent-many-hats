@@ -38,12 +38,17 @@ export const listDir: ToolHandler = {
   spec: {
     name: 'list_dir',
     description:
-      'List files and directories under a path in the workspace, with sizes. Use this before reading, to find candidates cheaply. Skips node_modules, .git, dist and similar generated directories.',
+      'List files and directories under a path in the workspace, with sizes. Use this before reading, to find candidates cheaply, and to find or count files *by name* — `name_pattern` filters on the filename, which search_files does not do. Skips node_modules, .git, dist and similar generated directories.',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Directory relative to the workspace root. Defaults to the root.' },
         depth: { type: 'integer', description: 'How many levels deep. 1-4, default 2.', minimum: 1, maximum: 4 },
+        name_pattern: {
+          type: 'string',
+          description:
+            'Regular expression matched against each entry\'s path, e.g. "\\.md$" for markdown files. Directories are kept so the shape stays readable. Use this rather than search_files when the question is about names.',
+        },
       },
       required: [],
     },
@@ -57,7 +62,28 @@ export const listDir: ToolHandler = {
     // on it is our bug, not theirs. [Seen in a live Sonnet run, 2026-08-14.]
     const target = ctx.guard.resolve(String(args['path'] || '.'), ctx.workspaceRoot);
     const depth = Number(args['depth'] ?? 2);
-    const entries = await walk(target, depth, ctx.workspaceRoot);
+    const all = await walk(target, depth, ctx.workspaceRoot);
+
+    // Filtering by name belongs here, not in search_files.
+    //
+    // search_files looks *inside* files and returns matching lines, which is the right tool
+    // for "where is this written" and the wrong one for "which files are called this". Asked
+    // to count the .md files under packs, a run reached for search_files with the pattern
+    // \.md$, got a truthful "no matches" — no line inside those files ends in .md — and had
+    // to recover. It picked the wrong tool because the right one did not exist.
+    const raw = typeof args['name_pattern'] === 'string' ? args['name_pattern'].trim() : '';
+    let match: RegExp | null = null;
+    if (raw) {
+      try {
+        match = new RegExp(raw);
+      } catch (e) {
+        throw new HatsError('TOOL_INPUT_INVALID', `name_pattern is not a valid regular expression: ${(e as Error).message}`, {
+          pattern: raw,
+        });
+      }
+    }
+    const entries = match ? all.filter((e) => e.isDir || match.test(e.rel)) : all;
+
     const lines = entries.map((e) =>
       e.isDir ? `${e.rel}/` : `${e.rel}  ${formatBytes(e.size)}`,
     );
@@ -68,7 +94,7 @@ export const listDir: ToolHandler = {
           ? `(empty) ${path.relative(ctx.workspaceRoot, target) || '.'}`
           : `${entries.length - dirs} files, ${dirs} directories under ${path.relative(ctx.workspaceRoot, target) || '.'} (depth ${depth}):\n${lines.join('\n')}`,
       payload: entries,
-      provenance: { path: target, depth },
+      provenance: { path: target, depth, ...(raw ? { namePattern: raw } : {}) },
     };
   },
 };
@@ -130,7 +156,7 @@ export const searchFiles: ToolHandler = {
   spec: {
     name: 'search_files',
     description:
-      'Regex search across workspace files. Returns matching lines with file and line number. Narrow the path and the pattern — a broad search at the root wastes a step.',
+      'Regex search *inside* workspace files: it reads their contents and returns matching lines with file and line number. It does not match filenames — to find or count files by name, use list_dir with name_pattern. Narrow the path and the pattern; a broad search at the root wastes a step.',
     parameters: {
       type: 'object',
       properties: {
