@@ -1968,26 +1968,59 @@ async function loadHistory() {
     card.onmouseenter = () => { card.style.borderColor = 'var(--line)'; };
     card.onmouseleave = () => { card.style.borderColor = 'transparent'; };
 
-    const top = st(el('div'), 'display:flex;flex-wrap:wrap;align-items:center;gap:9px');
-    top.appendChild(statusPill(r.ok ? 'ok' : 'incomplete', r.ok ? 'ok' : 'warn'));
-    top.appendChild(st(el('span', 'sm', r.request || '(no request)'), 'flex:1;min-width:200px;text-wrap:pretty'));
+    // A name and a caption, both one line high.
+    //
+    // The whole opening message used to sit here, wrapped: fine for "how many rule files
+    // are there", and a twenty-line card for anything that opened with a document — a
+    // repair request filled the screen with the defect report it was quoting. Cards of
+    // different heights are also unscannable, which is the one thing this list is for.
+    const top = st(el('div'), 'display:flex;align-items:center;gap:9px');
+    const name = st(el('span', 'sm', conversationName(r.request)), 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap');
+    top.appendChild(name);
     if (r.trigger && r.trigger.kind !== 'human') top.appendChild(statusPill(r.trigger.kind, 'idle'));
     top.appendChild(st(el('span', 'xs num', relativeTime(r.startedAt)), 'color:var(--ink-3);flex:none'));
     card.appendChild(top);
 
-    const meta = st(el('p', 'xs'), 'margin:5px 0 0;color:var(--ink-3)');
+    // "ok" was on every card that went normally, which is nearly all of them, so it was a
+    // badge for the absence of news. Only the ones that stopped short say anything.
+    const meta = st(el('p', 'xs'), 'margin:4px 0 0;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap');
     meta.textContent = [
+      r.ok ? null : 'incomplete',
       r.outcomeId,
       r.profile,
       (r.steps || 0) + ' steps',
       r.trigger && r.trigger.actor !== 'you' ? 'started by ' + r.trigger.actor : null,
     ].filter(Boolean).join(' · ');
+    if (!r.ok) meta.style.color = 'var(--warn)';
     card.appendChild(meta);
 
     card.onclick = () => openConversation(r);
     wrap.appendChild(card);
   });
   v.appendChild(wrap);
+}
+
+/**
+ * A name for a conversation, from the message that opened it.
+ *
+ * Nothing stores a title, and asking a model for one would cost a call per run to label a
+ * list. The opening line is what a person would have named it anyway — the rest of the
+ * message is the detail they would have left out. Markup goes because a name reading
+ * "## The evidence" is a name nobody chose.
+ */
+function conversationName(request) {
+  const NEWLINE = String.fromCharCode(10);
+  const lines = String(request == null ? '' : request).split(NEWLINE);
+  let first = '';
+  for (const line of lines) {
+    let s = line.trim();
+    while (s.startsWith('#')) s = s.slice(1);
+    if (s.startsWith('- ') || s.startsWith('* ') || s.startsWith('> ')) s = s.slice(2);
+    s = s.split(String.fromCharCode(96)).join('').split('**').join('').trim();
+    if (s) { first = s; break; }
+  }
+  if (!first) return 'Untitled conversation';
+  return first.length > 90 ? first.slice(0, 89).trimEnd() + '…' : first;
 }
 
 /** "3 minutes ago" reads better than a timestamp in a list you are scanning. */
