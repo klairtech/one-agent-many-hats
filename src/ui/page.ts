@@ -132,6 +132,26 @@ table.grid td{padding:9px 0;border-top:1px solid var(--line)}
 .paper .md > *:first-child{margin-top:0}
 /* A narrow window should still be usable: collapse the sidebar to its icons rather than
    letting 236px of navigation crush the content it is navigating. */
+/* On a phone the header was taller than the first answer: the title, a subtitle that wrapped
+   to two lines, and an icon row that wrapped to a third. The subtitle explains a view you
+   have already chosen, so it is the first thing to go, and the profile keeps its glyph
+   without its label. */
+@media (max-width:560px){
+  header{padding:11px 14px 9px!important;flex-wrap:nowrap!important;gap:8px!important}
+  #view-blurb{display:none}
+  #view-title{font-size:20px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #view-icons,#shell-icons{gap:3px!important}
+  #shell-icons .proflabel,#shell-icons .egress{display:none}
+  /* The example rows put the question and its caption side by side, which at this width
+     left the question three words wide and the caption sitting on top of it. The caption
+     describes what the example demonstrates; the example is the point. */
+  .rw .exhint{display:none}
+  /* Send is the one control that can afford to shrink: the input is what you are aiming at.
+     The composer's desktop gutters were taking 48px of a 390px screen off the field. */
+  #prompt{min-width:0}
+  #send{padding-left:15px;padding-right:15px}
+  .composer{padding-left:12px!important;padding-right:12px!important}
+}
 @media (max-width:820px){
   aside{width:64px!important;padding:14px 8px 10px!important}
   aside .navlabel,aside .sidefoot,aside .brandtext{display:none}
@@ -276,17 +296,17 @@ const ICONS = {
 };
 
 const VIEWS = [
-  { id: 'run', label: 'Chat', title: 'Chat', blurb: 'One agent, one transcript. Every answer carries the evidence it was built from, and every action passed the same gates.', load: () => renderRun() },
-  { id: 'outputs', label: 'Outputs', title: 'Outputs', blurb: 'Files the agent wrote, newest first. Evidence it merely read or computed stays in the conversation.', load: () => loadOutputs() },
-  { id: 'memory', label: 'Memory', title: 'Memory', blurb: 'What it has been told, what it noticed, and what it learned from going wrong. Yours to edit or delete.', load: () => loadMemory() },
-  { id: 'proposals', label: 'Proposals', title: 'Proposals', blurb: 'What it wants to add, and what it could not add on its own. Anything blocked says why.', load: () => loadProposals() },
-  { id: 'registry', label: 'Registry', title: 'Skills, rules and tools', blurb: 'Behaviour composed from files you can read. Every rule above prompt strength names the code that enforces it.', load: () => loadRegistry() },
-  { id: 'analytics', label: 'Analytics', title: 'Analytics', blurb: 'Read back from the run records already on your disk. Nothing is collected and nothing is sent.', load: () => loadAnalytics() },
-  { id: 'space', label: 'Storage', title: 'Storage', blurb: 'What each part costs in megabytes, and what deleting it costs you. Those are different questions.', load: () => loadSpace() },
-  { id: 'history', label: 'Conversations', title: 'Past conversations', blurb: 'Open one to read it and carry on where it stopped. Every conversation is on your disk with its transcript and audit trail.', load: () => loadHistory() },
-  { id: 'connectors', label: 'Connectors', title: 'Connectors and setup', blurb: 'What the tools need before they can work \u2014 search keys, hosts, mail \u2014 and MCP servers, whose tools go through the same executor as the built-in ones.', load: () => loadConnectors() },
-  { id: 'schedule', label: 'Schedule', title: 'Runs without you', blurb: 'Work that fires on a timetable, and messages that arrive from off this machine. Neither can approve itself.', load: () => loadSchedules() },
-  { id: 'setup', label: 'Setup', title: 'Models and providers', blurb: 'Connect a model, see live prices, install one locally. Keys are read from your environment or stored 0600, never in config.json.', load: () => loadSetup() },
+  { id: 'run', label: 'Chat', title: 'Chat', blurb: 'One transcript. Every claim cites its evidence.', load: () => renderRun() },
+  { id: 'outputs', label: 'Outputs', title: 'Outputs', blurb: 'Files it wrote. What it only read stays in the chat.', load: () => loadOutputs() },
+  { id: 'memory', label: 'Memory', title: 'Memory', blurb: 'What it was told, noticed and learned. Yours to edit.', load: () => loadMemory() },
+  { id: 'proposals', label: 'Proposals', title: 'Proposals', blurb: 'What it wants to add. Anything blocked says why.', load: () => loadProposals() },
+  { id: 'registry', label: 'Registry', title: 'Skills, rules and tools', blurb: 'Behaviour composed from files you can read.', load: () => loadRegistry() },
+  { id: 'analytics', label: 'Analytics', title: 'Analytics', blurb: 'Read from run records on your disk. Nothing is sent.', load: () => loadAnalytics() },
+  { id: 'space', label: 'Storage', title: 'Storage', blurb: 'What each part costs, and what deleting it costs you.', load: () => loadSpace() },
+  { id: 'history', label: 'Conversations', title: 'Past conversations', blurb: 'Open one and carry on where it stopped.', load: () => loadHistory() },
+  { id: 'connectors', label: 'Connectors', title: 'Connectors and setup', blurb: 'What tools need before they work, and MCP servers.', load: () => loadConnectors() },
+  { id: 'schedule', label: 'Schedule', title: 'Runs without you', blurb: 'Work that fires on a timetable. Nothing approves itself.', load: () => loadSchedules() },
+  { id: 'setup', label: 'Setup', title: 'Models and providers', blurb: 'Connect a model. Keys are stored 0600, never in config.', load: () => loadSetup() },
 ];
 
 let STATE = null;
@@ -440,7 +460,7 @@ function paintShellIcons() {
   const current = PROFILES.find((x) => x[0] === STATE.profile) || PROFILES[0];
   const prof = el('button', 'btn3 btnsm');
   prof.innerHTML = ICONS.filter;
-  prof.appendChild(st(el('span', 'xs', current[1]), 'margin-left:7px;font-weight:600'));
+  prof.appendChild(st(el('span', 'xs proflabel', current[1]), 'margin-left:7px;font-weight:600'));
   prof.title = current[2];
   prof.setAttribute('aria-label', 'Execution profile: ' + current[1]);
   st(prof, 'display:inline-flex;align-items:center;padding:7px 11px;line-height:0');
@@ -448,7 +468,7 @@ function paintShellIcons() {
   host.appendChild(prof);
 
   if (STATE.network) {
-    const net = st(el('span', 'xs', 'egress ON'), 'color:var(--warn);font-weight:600;align-self:center');
+    const net = st(el('span', 'xs egress', 'egress ON'), 'color:var(--warn);font-weight:600;align-self:center');
     net.title = 'Tools may reach the network. Turn it off in Setup.';
     host.appendChild(net);
   }
@@ -548,7 +568,7 @@ function renderRun() {
   thread.appendChild(inner);
   v.appendChild(thread);
 
-  const composer = st(el('div'), 'flex:none;border-top:1px solid var(--line);padding:12px 24px 16px');
+  const composer = st(el('div', 'composer'), 'flex:none;border-top:1px solid var(--line);padding:12px 24px 16px');
   const chips = st(el('div'), 'max-width:760px;margin:0 auto 8px;display:none;flex-wrap:wrap;gap:6px');
   chips.id = 'attachments';
   composer.appendChild(chips);
@@ -621,7 +641,7 @@ function renderIdle() {
       st(b, 'display:flex;align-items:center;gap:11px;width:100%;text-align:left;border:0;border-radius:14px;background:none;color:inherit;font-family:inherit;font-size:14px;padding:12px 14px;cursor:pointer');
       b.appendChild(st(el('span', null, '\\u203A'), 'flex:none;color:var(--ink-3)'));
       b.appendChild(st(el('span', null, label), 'min-width:0;flex:1'));
-      b.appendChild(st(el('span', 'xs', hint), 'flex:none;color:var(--ink-3)'));
+      b.appendChild(st(el('span', 'xs exhint', hint), 'flex:none;color:var(--ink-3)'));
       b.onclick = () => { $('#prompt').value = label; doSend(); };
       list.appendChild(b);
     });
@@ -1352,7 +1372,7 @@ async function loadMemory() {
 
   const ctx = el('section', 'sect');
   ctx.appendChild(el('p', 'h3', 'Workspace context'));
-  ctx.appendChild(el('p', 'xs note', 'Authored by you, read by the agent, never written by it. Where you have said who you are, it listens instead of guessing.'));
+  ctx.appendChild(el('p', 'xs note', 'Written by you, read by the agent, never written by it.'));
   const ta = el('textarea', 'fld');
   st(ta, 'margin-top:11px;min-height:200px;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6');
   ta.value = m.org || '';
@@ -1365,7 +1385,7 @@ async function loadMemory() {
 
   const per = el('section', 'sect');
   per.appendChild(el('p', 'h3', 'Persona'));
-  per.appendChild(el('p', 'xs note', 'Inferred from how you have worked, one sentence at a time. Every line here is in the prompt of every run, so a wrong one steers the agent quietly — forget it and it stops.'));
+  per.appendChild(el('p', 'xs note', 'Inferred from how you work. Every line is in every prompt, so a wrong one steers it quietly.'));
   // One row per fact rather than the joined summary. They were technically on screen before,
   // concatenated into a single paragraph, which is the same as not being on screen: nobody
   // reads a wall of inferences about themselves, and there was no way to drop just the wrong one.
@@ -1387,7 +1407,7 @@ async function loadMemory() {
 
   const les = el('section', 'sect');
   les.appendChild(el('p', 'h3', 'Lessons'));
-  les.appendChild(el('p', 'xs note', 'Learned from going wrong. A lesson can change how it works; it can never change what it may touch.'));
+  les.appendChild(el('p', 'xs note', 'Learned from going wrong. Never changes what it may touch.'));
   const lul = el('ul', 'rowlist');
   m.lessons.forEach((l) => {
     const li = el('li');
@@ -2356,7 +2376,7 @@ async function loadRegistry() {
 
   const sk = el('section', 'sect');
   sk.appendChild(el('p', 'h3', 'Skills'));
-  sk.appendChild(el('p', 'xs note', 'Versioned playbooks. The header is contract — the allowlist, the step budget, the review requirement — and the prose is what the model reads.'));
+  sk.appendChild(el('p', 'xs note', 'Versioned playbooks. The header is contract, the prose is what the model reads.'));
   const stab = el('table', 'grid');
   stab.innerHTML = '<thead><tr><th>Skill</th><th>Ver</th><th>Kind</th><th>Role</th><th>Review</th><th style="text-align:right">Tools</th></tr></thead>';
   const sb = el('tbody');
@@ -2374,7 +2394,7 @@ async function loadRegistry() {
 
   const ru = el('section', 'sect');
   ru.appendChild(el('p', 'h3', 'Rules'));
-  ru.appendChild(el('p', 'xs note', 'Each declares its own enforcement strength. Anything above prompt strength must name the code path that holds it, and the registry refuses to start if that path does not exist.'));
+  ru.appendChild(el('p', 'xs note', 'Each declares its enforcement strength, and must name the code that holds it.'));
   const rul = el('ul', 'rowlist');
   r.rules.forEach((x) => {
     const li = el('li');
@@ -2391,7 +2411,7 @@ async function loadRegistry() {
 
   const to = el('section', 'sect');
   to.appendChild(el('p', 'h3', 'Tools'));
-  to.appendChild(el('p', 'xs note', 'The entire action surface. Everything passes one executor, which checks the registry, the allowlist, the profile, the schema, the gates and your approval before anything runs.'));
+  to.appendChild(el('p', 'xs note', 'The entire action surface. Everything passes one executor.'));
 
   // Anything that needs setting up and has not been comes first. A tool that is present but
   // unusable looks identical to a working one in a plain list, which is how "why did it not
@@ -2446,7 +2466,7 @@ async function loadRegistry() {
 
   const mc = el('section', 'sect');
   mc.appendChild(el('p', 'h3', 'MCP servers'));
-  mc.appendChild(el('p', 'xs note', 'Configure these in config.json under "mcpServers". Their tools arrive as mcp__server__tool and pass through the same executor — but a server is a process we did not write, so anything it does not mark read-only is treated as able to change things.'));
+  mc.appendChild(el('p', 'xs note', 'Set these in config.json under "mcpServers". A server is a process we did not write, so anything unmarked is treated as able to change things.'));
   if (!r.mcp.length) {
     const none = st(el('div'), 'margin:11px 0 0');
     none.appendChild(st(el('p', 'sm', 'No MCP servers connected, so no mcp__ tools exist. That is the default — nothing is missing.'), 'margin:0;color:var(--ink-2);text-wrap:pretty'));
