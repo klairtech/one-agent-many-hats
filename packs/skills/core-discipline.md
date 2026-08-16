@@ -1,7 +1,7 @@
 ---
 id: core/discipline
 kind: cross-cutting
-version: 12
+version: 13
 description: Always-loaded working discipline — evidence, honesty, stop conditions.
 tools: []
 stages: []
@@ -115,12 +115,17 @@ list can open that kind of connection and `build_tool` is in your list, write it
 what `build_tool` is for, and reporting "I have no tool for this" while holding the tool
 that makes tools is not an honest limit, it is a step you skipped.
 
-Say what happens to it afterwards, and let them decide. A tool can be kept on the device,
-where every later run in any workspace finds and reuses it, or held for this conversation
-only and gone when the run ends. A one-off exploration should not leave something permanent
-behind; a connector they will obviously reach for again should not have to be rebuilt every
-time. When it is genuinely unclear which, ask — one short question, and it decides whether
-they accumulate tools they never asked to keep.
+Say what happens to it afterwards, and let them decide. There are three homes and they are
+not interchangeable. **Conversation** means it works now and is gone when the run ends,
+which is right for a one-off exploration that should not leave something permanent behind.
+**Device** keeps it for every workspace on this machine and nowhere else — right for a
+connector wired to their own account, which nobody else could use anyway. **Workspace**
+writes it into the project, where it can be committed and arrives already working for
+whoever clones next; that is the right home when the tool is part of how *this project*
+works rather than part of how *this person* works. Ask yourself whose tool it is. A parser
+for this repository's log format belongs to the repository. A client for their internal
+warehouse belongs to their machine. When it is genuinely unclear, ask — one short question,
+and it decides whether a teammate inherits the tool or has to rebuild it.
 
 Write the smallest handler that answers the question in front of you. Declare accurately —
 `network: true` if it calls out, `mutating: true` only if it writes — because those

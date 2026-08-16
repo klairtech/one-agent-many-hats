@@ -13,7 +13,8 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { DEFAULT_CONFIG } from '../src/core/config.js';
-import { generatedToolsDir } from '../src/core/paths.js';
+import { nullLogger } from '../src/core/logger.js';
+import { generatedToolsDir, workspaceToolsDir } from '../src/core/paths.js';
 import { runAutoPromotion } from '../src/engine/autonomy.js';
 import { stageProposal } from '../src/registry/proposals.js';
 import { loadGeneratedTools } from '../src/tools/generated/index.js';
@@ -331,6 +332,57 @@ test('a tool meant to be kept still installs itself', async () => {
     assert.equal(outcome.promoted.length, 1, JSON.stringify(outcome.notes));
     assert.deepEqual((await listGeneratedTools()).map((g) => g.tool.name), ['kept_probe']);
   } finally {
+    await cleanup(home);
+  }
+});
+
+/**
+ * A tool can live in the project instead of on the machine.
+ *
+ * The device directory is private to one person, which is right for a connector wired to
+ * their own account and wrong for a tool that is part of how a project works. A workspace
+ * tool is a folder in the repository: it goes into a commit, and whoever clones next has it
+ * already. What it may *do* is unchanged — the flags come from the manifest either way —
+ * so the only thing this asserts is that it is found, and found first.
+ */
+test('a workspace tool is loaded, and beats a device tool of the same name', async () => {
+  const home = await tempHome();
+  const ws = await fsp.mkdtemp(path.join(await fsp.realpath(process.env['TMPDIR'] ?? '/tmp'), 'hats-ws-'));
+  try {
+    await writeGeneratedTool(tool({ name: 'orders_query', description: 'the device one' }), 'export async function run(){return{summary:"device"}}', generatedToolsDir());
+    await writeGeneratedTool(tool({ name: 'orders_query', description: 'the project one' }), 'export async function run(){return{summary:"workspace"}}', workspaceToolsDir(ws));
+    await writeGeneratedTool(tool({ name: 'device_only' }), 'export async function run(){return{summary:"x"}}', generatedToolsDir());
+
+    const handlers = await loadGeneratedTools([], nullLogger, ws);
+    const names = handlers.map((h) => h.spec.name).sort();
+    assert.deepEqual(names, ['device_only', 'orders_query'], 'both homes should contribute');
+
+    const shared = handlers.find((h) => h.spec.name === 'orders_query');
+    assert.equal(
+      shared?.spec.description,
+      'the project one',
+      'a tool committed to the project must not be overridden by whatever this machine happens to hold',
+    );
+
+    // Without a workspace, nothing changes: the device directory is still the whole story.
+    const deviceOnly = await loadGeneratedTools([], nullLogger);
+    assert.equal(deviceOnly.find((h) => h.spec.name === 'orders_query')?.spec.description, 'the device one');
+  } finally {
+    await fsp.rm(ws, { recursive: true, force: true });
+    await cleanup(home);
+  }
+});
+
+/** A built-in still wins over both, which is the check that makes the rest safe. */
+test('neither home can shadow a built-in', async () => {
+  const home = await tempHome();
+  const ws = await fsp.mkdtemp(path.join(await fsp.realpath(process.env['TMPDIR'] ?? '/tmp'), 'hats-ws-'));
+  try {
+    await writeGeneratedTool(tool({ name: 'write_file' }), 'export async function run(){return{summary:"hijacked"}}', workspaceToolsDir(ws));
+    const handlers = await loadGeneratedTools(ALL_TOOLS, nullLogger, ws);
+    assert.equal(handlers.find((h) => h.spec.name === 'write_file'), undefined, 'write_file was shadowed from the workspace');
+  } finally {
+    await fsp.rm(ws, { recursive: true, force: true });
     await cleanup(home);
   }
 });

@@ -21,7 +21,7 @@ import path from 'node:path';
 import { apiKeyEnvName, loadConfig, resolveApiKeyWithSource, saveConfig, type Profile, type Tier } from '../core/config.js';
 import { clearCredential, credentialHint, credentialsPath, getCredential, setCredential } from '../core/credentials.js';
 import { toHatsError } from '../core/errors.js';
-import { PathGuard, hatsHome, packageRoot, workspaceDir } from '../core/paths.js';
+import { PathGuard, generatedToolsDir, hatsHome, packageRoot, workspaceDir, workspaceToolsDir } from '../core/paths.js';
 import { PRESETS } from '../core/presets.js';
 import { prune, scanSpace } from '../core/space.js';
 import { readJson } from '../core/store.js';
@@ -38,6 +38,7 @@ import { listDirectory, preview, readRaw, revealInFolder } from './files.js';
 import { renderMarkdown } from './markdown.js';
 import { CATALOGUE, OllamaAdmin, SUGGESTED, catalogueWithSizes, searchHuggingFace } from './models.js';
 import { collectOutputs } from './outputs.js';
+import { listGeneratedTools } from '../tools/generated/store.js';
 import { renderPage } from './page.js';
 import { catalogue, quote } from './pricing.js';
 
@@ -603,7 +604,7 @@ export async function startUi(
         const body = (await readBody(req)) as { id?: string; action?: string };
         if (!body.id) return json(res, 400, { error: 'NO_ID' });
         if (body.action === 'promote') {
-          const result = await promoteProposal(body.id);
+          const result = await promoteProposal(body.id, { workspaceRoot: session.workspaceRoot });
           session.registry = await reloadRegistry();
           return json(res, 200, { written: result.written, manual: result.manual });
         }
@@ -643,7 +644,16 @@ export async function startUi(
         return json(res, 200, { proposal: await getProposal(body.id) });
       }
 
-      case 'GET /api/registry':
+      case 'GET /api/registry': {
+        // Read per request rather than cached: a tool installed a minute ago should say
+        // where it lives, and this list is small.
+        const generatedSources = new Map<string, string>();
+        for (const { tool } of await listGeneratedTools(workspaceToolsDir(session.workspaceRoot))) {
+          generatedSources.set(tool.name, 'workspace');
+        }
+        for (const { tool } of await listGeneratedTools(generatedToolsDir())) {
+          if (!generatedSources.has(tool.name)) generatedSources.set(tool.name, 'device');
+        }
         return json(res, 200, {
           skills: session.registry.skills.map((s) => ({
             id: s.id,
@@ -670,8 +680,9 @@ export async function startUi(
               network: h.spec.network === true,
               minProfile: h.spec.minProfile,
               description: h.spec.description,
-              // Where it comes from, so a connector's tools are not mixed in with built-ins.
-              source: mcp ? `mcp:${mcp}` : 'built-in',
+              // Where it comes from, so a connector's tools are not mixed in with built-ins
+              // and a tool the agent wrote is never presented as one that shipped.
+              source: mcp ? `mcp:${mcp}` : (generatedSources.get(name) ?? 'built-in'),
               // Which skills may call it — the allowlist is an intersection, so a tool
               // nothing names can never run, and that is worth being able to see.
               usedBy: session.registry
@@ -685,6 +696,7 @@ export async function startUi(
             };
           }),
         });
+      }
 
       case 'GET /api/schedules': {
         const { listSchedules, nextFireFor, describeRecord } = await import('../schedule/store.js');

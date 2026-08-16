@@ -8,7 +8,7 @@
 
 import { Logger, nullLogger } from '../../core/logger.js';
 import type { ToolHandler } from '../types.js';
-import { generatedToolsDir } from '../../core/paths.js';
+import { generatedToolsDir, workspaceToolsDir } from '../../core/paths.js';
 import { generatedHandler } from './handler.js';
 import { listGeneratedTools } from './store.js';
 
@@ -33,20 +33,35 @@ export {
 export async function loadGeneratedTools(
   builtins: ToolHandler[],
   logger: Logger = nullLogger,
+  workspaceRoot?: string,
 ): Promise<ToolHandler[]> {
   const reserved = new Set(builtins.map((h) => h.spec.name));
   const handlers: ToolHandler[] = [];
 
-  for (const { tool } of await listGeneratedTools(generatedToolsDir())) {
-    if (reserved.has(tool.name)) {
-      logger.warn('generated.shadowed', {
-        name: tool.name,
-        detail: 'a built-in already owns this name; the generated tool is ignored',
-      });
-      continue;
+  // Workspace before device, so a project that ships its own version of a tool gets it.
+  // The alternative — device wins — means a tool committed to a repository behaves
+  // differently on the machine of whoever happened to build one with the same name first,
+  // which is the failure that makes shared tools not worth committing.
+  const sources: Array<{ scope: 'workspace' | 'device'; root: string }> = [];
+  if (workspaceRoot) sources.push({ scope: 'workspace', root: workspaceToolsDir(workspaceRoot) });
+  sources.push({ scope: 'device', root: generatedToolsDir() });
+
+  for (const source of sources) {
+    for (const { tool, dir } of await listGeneratedTools(source.root)) {
+      if (reserved.has(tool.name)) {
+        logger.warn('generated.shadowed', {
+          name: tool.name,
+          scope: source.scope,
+          detail:
+            source.scope === 'device'
+              ? 'the workspace or a built-in already owns this name; this one is ignored'
+              : 'a built-in already owns this name; the generated tool is ignored',
+        });
+        continue;
+      }
+      reserved.add(tool.name);
+      handlers.push(generatedHandler(tool, undefined, dir));
     }
-    reserved.add(tool.name);
-    handlers.push(generatedHandler(tool));
   }
 
   if (handlers.length > 0) {

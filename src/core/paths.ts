@@ -67,6 +67,21 @@ export function generatedToolsDir(): string {
   return path.join(hatsHome(), 'tools');
 }
 
+/**
+ * The other home for an agent-written tool: inside the project it serves.
+ *
+ * Device tools are private to one machine, which is right for a connector holding your own
+ * credentials and wrong for a tool that is part of how a project works. A tool that parses
+ * this repository's log format belongs to the repository — it should be committed, reviewed
+ * in a pull request, and arrive already working for whoever clones next.
+ *
+ * Deliberately not under a dot-directory. This holds code the agent wrote that will run on
+ * the machine of everyone who pulls, and hiding it from `ls` is the wrong instinct entirely.
+ */
+export function workspaceToolsDir(workspaceRoot: string): string {
+  return path.join(workspaceRoot, 'hats-tools');
+}
+
 /** One JSON file per schedule, so the panel and the daemon never write the same file. */
 export function schedulesDir(): string {
   return path.join(hatsHome(), 'schedules');
