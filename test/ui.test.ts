@@ -476,3 +476,25 @@ test('conversations that produced nothing do not push real outputs off the page'
     await cleanup(home);
   }
 });
+
+/**
+ * page.ts is one long template literal, so a backtick anywhere inside it ends the page.
+ * The build catches it, but only as "',' expected" pointing at a line that is fine — and
+ * it has now happened three times in comments explaining code that mentions an identifier
+ * in backticks, which is the most natural thing in the world to write.
+ *
+ * This says so in one line instead.
+ */
+test('no comment inside the page template carries a backtick', async () => {
+  const src = await fsp.readFile(new URL('../../src/ui/page.ts', import.meta.url), 'utf8');
+  const offenders = src
+    .split('\n')
+    .map((line, i) => ({ line, n: i + 1 }))
+    .filter(({ line }) => line.trim().startsWith('//') && line.includes(String.fromCharCode(96)));
+
+  assert.deepEqual(
+    offenders.map((o) => o.n),
+    [],
+    `backtick in a comment would end the page template: ${offenders.map((o) => o.n + ': ' + o.line.trim().slice(0, 60)).join(' | ')}`,
+  );
+});

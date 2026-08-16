@@ -207,11 +207,9 @@ table.grid td{padding:9px 0;border-top:1px solid var(--line)}
 
       <div style="flex:1;min-height:14px"></div>
       <div class="sidefoot" style="flex:none;border-top:1px solid var(--line);padding-top:11px">
-        <p class="xs" style="margin:0;color:var(--ink-3)">Workspace</p>
-        <p class="sm mono" id="side-workspace" style="margin:2px 0 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></p>
-        <p class="xs" id="side-model" style="margin:8px 0 0;display:flex;align-items:center;gap:7px;color:var(--ink-2)"></p>
+        <p class="xs" id="side-model" style="margin:0;display:flex;align-items:center;gap:7px;color:var(--ink-2)"></p>
         <p class="xs" id="side-bind" style="margin:9px 0 0;display:flex;align-items:center;gap:7px;color:var(--ink-3)"></p>
-        <a class="xs" href="https://klairtech.com" target="_blank" rel="noreferrer noopener" style="display:block;margin:10px 0 0;color:var(--ink-3);text-decoration:none">Built on Klair Hats</a>
+        <a class="xs" href="https://klairtech.com" target="_blank" rel="noreferrer noopener" style="display:block;margin:10px 0 0;color:var(--ink-3);text-decoration:none">Built by KlairTech</a>
       </div>
     </aside>
 
@@ -277,6 +275,8 @@ function toggleTheme() {
 
 // --- views ------------------------------------------------------------------------
 const ICONS = {
+  copy: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
+  tick: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m20 6-11 11-5-5"/></svg>',
   filter: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M7 12h10"/><path d="M10 18h4"/></svg>',
   clip: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.1 12.3 20.2a5.5 5.5 0 0 1-7.8-7.8l9.2-9.1a3.7 3.7 0 0 1 5.2 5.2l-9.2 9.1a1.8 1.8 0 0 1-2.6-2.6l8.5-8.4"/></svg>',
   moon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8"/></svg>',
@@ -534,8 +534,11 @@ const PROFILES = [
 async function loadState() {
   STATE = await api('/api/state');
   paintShellIcons();
-  $('#side-workspace').textContent = STATE.workspace;
-  $('#side-workspace').title = STATE.workspace;
+  // The workspace path was two lines of the sidebar restating something the window title
+  // and every citation already carry. It stays as the tooltip on the model line, which is
+  // where someone actually wonders which project they are pointed at.
+  const foot = document.querySelector('.sidefoot');
+  if (foot) foot.title = STATE.workspace;
 
   const bound = STATE.tiers.standard || STATE.tiers.light || STATE.tiers.frontier;
   const dot = st(el('span'), 'width:7px;height:7px;border-radius:999px;flex:none;background:' + (bound ? 'var(--ok)' : 'var(--warn)'));
@@ -961,9 +964,10 @@ async function closeSandboxCard(handle, data, runId) {
   let text = String(data.output || '').trim();
   if (ok && data.artifactId && runId) {
     try {
-      const d = await api('/api/artifact?runId=' + encodeURIComponent(runId) + '&id=' + encodeURIComponent(data.artifactId));
-      const payload = d.artifact && d.artifact.payload;
-      if (payload !== undefined) text = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+      const a = await api('/api/artifact?runId=' + encodeURIComponent(runId) + '&id=' + encodeURIComponent(data.artifactId));
+      if (a.payload && a.payload !== 'null') {
+        text = a.payload + (a.truncated ? '\\n\\n[' + a.payloadChars + ' characters in total; the rest is in ' + a.file + ']' : '');
+      }
     } catch (e) {
       /* the bounded summary is a fair fallback */
     }
@@ -979,10 +983,113 @@ async function closeSandboxCard(handle, data, runId) {
 }
 
 /** One shape for a message you sent, whether it is being typed now or read back later. */
-function bubbleUser(text) {
+function bubbleUser(text, at) {
   const you = st(el('div'), 'display:flex;flex-direction:column;align-items:flex-end;animation:rise .2s ease both;margin-bottom:18px');
   you.appendChild(st(el('p', null, text), 'margin:0;font-size:15px;line-height:1.6;background:var(--surface-2);border-radius:22px 22px 6px 22px;padding:13px 19px;max-width:82%;text-wrap:pretty'));
+  you.appendChild(messageFooter({ text, at, align: 'flex-end' }));
   return you;
+}
+
+/**
+ * The quiet line under a message: when it was said, and a way to take it with you.
+ *
+ * Deliberately low contrast and deliberately below. Every scrap of run metadata used to sit
+ * *above* the answer, between the question and the thing that answered it, where it was
+ * read once and then scrolled past forever. What is worth keeping — the time, the model,
+ * a way into the trace — belongs after the content, at the weight of a caption.
+ */
+function messageFooter(opts) {
+  const bar = st(el('div'), 'display:flex;align-items:center;gap:9px;margin:7px 0 0;justify-content:' + (opts.align || 'flex-start'));
+
+  if (opts.label) bar.appendChild(statusPill(opts.label, opts.tone || 'idle'));
+
+  const when = new Date(opts.at || Date.now());
+  const stamp = st(el('span', 'xs num'), 'color:var(--ink-3)');
+  stamp.textContent = when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  stamp.title = when.toLocaleString();
+  bar.appendChild(stamp);
+
+  if (opts.model) bar.appendChild(st(el('span', 'xs', shortModel(opts.model)), 'color:var(--ink-3)'));
+  if (opts.detail) bar.appendChild(st(el('span', 'xs', opts.detail), 'color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0'));
+
+  const copy = el('button', 'xs');
+  copy.innerHTML = ICONS.copy;
+  copy.title = 'Copy this message';
+  copy.setAttribute('aria-label', 'Copy this message');
+  st(copy, 'border:0;background:none;color:var(--ink-3);cursor:pointer;padding:2px;line-height:0;display:inline-flex;align-items:center');
+  copy.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(String(opts.text || ''));
+      copy.innerHTML = ICONS.tick;
+    } catch (e) {
+      copy.innerHTML = '';
+      copy.textContent = 'select and press Cmd-C';
+    }
+    setTimeout(() => { copy.innerHTML = ICONS.copy; }, 1600);
+  };
+  bar.appendChild(copy);
+
+  if (opts.trace) {
+    const t = el('button', 'xs', 'trace');
+    st(t, 'border:0;background:none;color:var(--ink-3);cursor:pointer;padding:2px 3px;font-family:inherit');
+    let open = false;
+    t.onclick = () => {
+      open = !open;
+      opts.trace.style.display = open ? 'flex' : 'none';
+      t.textContent = open ? 'hide trace' : 'trace';
+    };
+    bar.appendChild(t);
+  }
+  return bar;
+}
+
+/** anthropic/claude-haiku-4-5-20251001 is a mouthful for a caption. */
+function shortModel(id) {
+  let tail = String(id).split('/').pop() || '';
+  if (tail.startsWith('claude-')) tail = tail.slice(7);
+  // Trailing -YYYYMMDD, without a regex for the reason above.
+  const cut = tail.lastIndexOf('-');
+  const suffix = cut >= 0 ? tail.slice(cut + 1) : '';
+  if (suffix.length === 8 && !Number.isNaN(Number(suffix))) tail = tail.slice(0, cut);
+  return tail;
+}
+
+/**
+ * Every art_... in a delivered answer becomes something you can open.
+ *
+ * The whole design turns on claims being traceable to evidence, and the citation was a
+ * fifteen-character opaque string you could read and not follow. The artifact was always
+ * one API call away; nothing pointed at it.
+ */
+function linkArtifacts(host, runId) {
+  if (!host || !runId) return;
+  // The renderer already marks them: it wraps every art_... in span.md-art on its way to
+  // HTML. Matching the markup beats re-finding them with a regex — and a regex here would
+  // have to survive this file being one long template literal, where a lone backslash-b
+  // becomes a backspace character and quietly matches nothing at all.
+  host.querySelectorAll('.md-art').forEach((span) => {
+    const id = (span.textContent || '').trim();
+    if (!id) return;
+    const b = el('button', 'xs mono');
+    b.textContent = id;
+    st(b, 'border:0;background:none;color:var(--brand-strong);font-family:ui-monospace,monospace;font-size:.94em;cursor:pointer;padding:0;text-decoration:underline;text-underline-offset:2px');
+    b.title = 'Open this evidence';
+    b.onclick = () => openArtifact(runId, id);
+    span.replaceWith(b);
+  });
+}
+
+async function openArtifact(runId, id) {
+  try {
+    // The endpoint returns the artifact flat, with the payload already stringified and
+    // bounded at 40k — it says so with truncated, and names the file holding the rest.
+    const a = await api('/api/artifact?runId=' + encodeURIComponent(runId) + '&id=' + encodeURIComponent(id));
+    const body = a.payload && a.payload !== 'null' ? a.payload : a.summary || '(no payload)';
+    const tail = a.truncated ? '\\n\\n[' + a.payloadChars + ' characters in total. The whole thing is at ' + a.file + ']' : '';
+    await say(id + (a.tool ? '  ·  ' + a.tool : ''), body + tail);
+  } catch (e) {
+    await say('Could not open ' + id, e.message);
+  }
 }
 
 async function doSend() {
@@ -1002,35 +1109,23 @@ async function doSend() {
   const { row, body } = agentBlock();
   t.appendChild(row);
 
-  const head = st(el('div'), 'display:flex;flex-wrap:wrap;align-items:center;gap:9px');
-  const status = statusPill('working', 'idle');
-  const meta = st(el('span', 'xs num'), 'color:var(--ink-3)');
-  head.appendChild(status); head.appendChild(meta);
-  body.appendChild(head);
+  // One quiet line while it works, and nothing else above the answer.
+  //
+  // This used to be a status pill, a step counter, and a rail of stage chips that grew as
+  // the run progressed — intake, discover, plan, act. It is the kind of display that looks
+  // informative and is mostly motion: the stages are the same four almost every time, the
+  // step count means nothing without the budget it is out of, and all of it sits between
+  // the question and the answer, which is the one thing anybody scrolled here to read.
+  // What is genuinely worth knowing after the fact lives in the footer, and the detail is
+  // one click away in the trace.
+  const status = st(el('span', 'xs'), 'color:var(--ink-3)');
+  status.textContent = 'working';
+  body.appendChild(status);
 
-  const stages = st(el('ol'), 'list-style:none;display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:13px 0 0;padding:0');
-  body.appendChild(stages);
-  const seenStages = new Set();
-  const addStage = (name, tone) => {
-    if (seenStages.has(name)) return;
-    seenStages.add(name);
-    const li = st(el('li'), 'display:flex;align-items:center;gap:6px');
-    if (stages.children.length) li.appendChild(st(el('span'), 'width:12px;height:1px;background:var(--line)'));
-    const c = tone === 'ok' ? ['var(--ok-soft)', 'var(--ok)'] : ['var(--surface-2)', 'var(--ink-2)'];
-    li.appendChild(st(el('span', 'xs pill', name), 'background:' + c[0] + ';color:' + c[1]));
-    stages.appendChild(li);
-  };
-
-  const trace = st(el('div'), 'margin:14px 0 0;display:none;flex-direction:column;gap:3px');
-  const traceBtn = el('button', 'btn3 btnsm', 'Show trace');
-  st(traceBtn, 'flex:none;padding:4px 10px;min-height:28px;font-size:12px');
-  let traceOpen = false;
-  traceBtn.onclick = () => { traceOpen = !traceOpen; trace.style.display = traceOpen ? 'flex' : 'none'; traceBtn.textContent = traceOpen ? 'Hide trace' : 'Show trace'; };
-  head.appendChild(traceBtn);
-  body.appendChild(trace);
-
-  const answer = st(el('div', 'md'), 'margin:16px 0 0');
+  const trace = st(el('div'), 'margin:10px 0 0;display:none;flex-direction:column;gap:3px');
+  const answer = st(el('div', 'md'), 'margin:10px 0 0');
   body.appendChild(answer);
+  body.appendChild(trace);
   scrollThread();
 
   let runId;
@@ -1073,12 +1168,17 @@ async function doSend() {
     source.close(); source = null;
     busy = false;
     $('#send').disabled = false;
-    if (data.error) { status.replaceWith(statusPill('failed', 'dang')); answer.textContent = data.error; return; }
+    if (data.error) {
+      status.remove();
+      answer.textContent = data.error;
+      answer.appendChild(messageFooter({ text: data.error, tone: 'dang', label: 'failed' }));
+      return;
+    }
     const r = data.result;
     if (!r) { answer.textContent = 'no answer'; return; }
-    status.replaceWith(statusPill(r.ok ? 'delivered' : 'partial', r.ok ? 'ok' : 'warn'));
-    meta.textContent = r.steps + '/' + r.stepBudget + ' steps · ' + r.outcomeId + ' · ' + r.artifactCount + ' artifacts · ' + (r.modelsUsed || []).join(', ');
+    status.remove();
     if (r.answerHtml) answer.innerHTML = r.answerHtml; else answer.textContent = r.answer;
+    linkArtifacts(answer, r.runId);
     if (r.protocolDowngraded) {
       answer.appendChild(st(el('p', 'xs callout warn', 'This model has no native tool calling, so hats used the prompt-described protocol. Tool selection is noticeably less reliable that way.'), ''));
     }
@@ -1086,6 +1186,15 @@ async function doSend() {
     if (failed.length) {
       answer.appendChild(st(el('p', 'xs callout warn', 'Delivered with gaps: ' + failed.map((g) => g.detail).join('; ')), ''));
     }
+    body.appendChild(
+      messageFooter({
+        text: r.answer || '',
+        model: (r.modelsUsed || [])[0],
+        detail: r.outcomeId + (r.artifactCount ? ' · ' + r.artifactCount + (r.artifactCount === 1 ? ' artifact' : ' artifacts') : ''),
+        ...(r.ok ? {} : { tone: 'warn', label: 'partial' }),
+        trace,
+      }),
+    );
     body.appendChild(feedbackBar(r.runId));
     chatHistory = r.messages || chatHistory;
     scrollThread();
@@ -1684,7 +1793,7 @@ async function openConversation(run) {
 
   d.turns.forEach((turn) => {
     if (turn.role === 'user') {
-      thread.appendChild(bubbleUser(turn.content));
+      thread.appendChild(bubbleUser(turn.content, turn.ts));
       return;
     }
     if (turn.role !== 'assistant') return;
@@ -1697,9 +1806,11 @@ async function openConversation(run) {
       const md = st(el('div', 'md'), 'margin:0');
       md.innerHTML = turn.html;
       box.appendChild(md);
+      linkArtifacts(md, run.runId);
     } else if (turn.content) {
       box.appendChild(st(el('p', 'sm'), 'margin:0;white-space:pre-wrap;text-wrap:pretty')).textContent = turn.content;
     }
+    if (turn.content) box.appendChild(messageFooter({ text: turn.content, at: turn.ts }));
     thread.appendChild(box);
   });
 
