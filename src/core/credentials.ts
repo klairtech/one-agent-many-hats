@@ -7,7 +7,10 @@
  *
  * Rules this module exists to enforce:
  *   - a stored key is never returned by any API, logged, or put in a run's context. The
- *     UI is told `set` and the last four characters, and nothing else.
+ *     UI is told `set` and the last four characters, and nothing else. This file is also
+ *     named in `controlPlane()`, so the path tools and the panel's file browser refuse to
+ *     read it — otherwise "never returned by any API" would be true of this module and
+ *     false of the product.
  *   - the only place a key is read is the provider's Authorization header.
  *   - `hats config show` prints config, which by construction has no keys in it.
  *

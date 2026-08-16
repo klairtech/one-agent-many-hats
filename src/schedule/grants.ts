@@ -6,11 +6,17 @@
  * it authorises none, and `createGrant` refuses to create it. Defaulting open here would
  * quietly reproduce the blunt `allowTools` this exists to replace.
  *
- * Nothing the model can call reaches this file. Grants are created by a human at the CLI
- * or in the panel, and that is the whole point of them.
+ * Grants are created by a human at the CLI or in the panel, and that is the whole point of
+ * them. Nothing the model can call reaches `createGrant` — but a grant is a *file*, so that
+ * only holds while the model cannot write the file either. Two things keep it true, and
+ * both are load-bearing: `controlPlane()` puts `grants/` out of write reach of every path
+ * tool, and the path scope below is anchored to the workspace so a wildcard grant cannot
+ * name a target outside it. Weaken either and a grant for `write_file` becomes a grant for
+ * everything, issued by the agent to itself.
  */
 
 import path from 'node:path';
+import { homedir } from 'node:os';
 import { unlink } from 'node:fs/promises';
 
 import { HatsError } from '../core/errors.js';
@@ -206,7 +212,7 @@ export async function checkGrants(
       lastReason = `grant ${g.id} is for another workspace`;
       continue;
     }
-    const scoped = withinScope(tool, args, g.scope);
+    const scoped = withinScope(tool, args, g.scope, workspace);
     if (!scoped.ok) {
       lastReason = `grant ${g.id} covers ${tool} but not this call: ${scoped.why}`;
       continue;
@@ -230,6 +236,7 @@ function withinScope(
   tool: string,
   args: Record<string, unknown>,
   scope: GrantScope,
+  workspace: string,
 ): { ok: boolean; why: string } {
   const key = SCOPE_FOR[tool];
   if (!key) return { ok: false, why: `${tool} has no scope definition` };
@@ -265,10 +272,39 @@ function withinScope(
   // paths
   const targets = pathsOf(args);
   if (targets.length === 0) return { ok: false, why: 'no path on the call' };
-  const bad = targets.filter((t) => !patterns.some((p) => globMatches(normalise(t), p)));
+
+  // A grant's paths are workspace-relative by definition, so the call's path is made
+  // workspace-relative before it is matched. Without this the patterns are compared against
+  // whatever string the caller passed: `**` matches an absolute path anywhere on the disk,
+  // and `reports/**` is dodged by spelling the same file a different way.
+  const relatives: string[] = [];
+  for (const t of targets) {
+    const rel = workspaceRelative(t, workspace);
+    if (rel === null) return { ok: false, why: `path is outside the workspace: ${t}` };
+    relatives.push(rel);
+  }
+
+  const bad = relatives.filter((t) => !patterns.some((p) => globMatches(t, p)));
   return bad.length
     ? { ok: false, why: `path not in scope: ${bad.join(', ')}` }
     : { ok: true, why: '' };
+}
+
+/**
+ * The call's path as the grant author would have written it, or null if it does not land
+ * inside the workspace at all. Mirrors PathGuard's `~` handling so the two agree on what a
+ * path means; PathGuard remains the thing that actually enforces containment.
+ */
+function workspaceRelative(candidate: string, workspace: string): string | null {
+  const expanded = candidate.startsWith('~')
+    ? path.join(homedir(), candidate.slice(1))
+    : candidate;
+  const absolute = path.resolve(workspace, expanded);
+  const rel = path.relative(path.resolve(workspace), absolute);
+  if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    return null;
+  }
+  return normalise(rel);
 }
 
 function recipientsOf(args: Record<string, unknown>): string[] {

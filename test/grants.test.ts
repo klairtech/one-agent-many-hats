@@ -5,6 +5,7 @@
  */
 
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
@@ -274,6 +275,62 @@ test('glob matching is anchored at both ends', () => {
   assert.equal(globMatches('a/b/x/c', 'a/*/c'), false);
   assert.equal(isWideOpen({ paths: ['**'] }), true);
   assert.equal(isWideOpen({ paths: ['reports/**'] }), false);
+});
+
+/**
+ * The escalation this exists to stop: a wildcard is "everything that tool can do", and what
+ * write_file can do is bounded by the workspace. A path scope that matched the raw argument
+ * let an absolute path leave the workspace entirely, and the first thing outside it worth
+ * writing is the grants directory — at which point a grant for write_file is a grant for
+ * run_command, minted by the run that was supposed to be constrained by it.
+ */
+test('a wildcard path grant does not reach outside the workspace', async () => {
+  const home = await tempHome();
+  try {
+    await createGrant({
+      tools: ['write_file'],
+      scope: { paths: ['**'] },
+      reason: 'let the nightly run write its reports',
+    });
+
+    const inside = await checkGrants('write_file', { path: 'reports/nightly.md' }, WS);
+    assert.equal(inside.allowed, true, 'the grant should still cover ordinary work');
+
+    for (const escape of [
+      path.join(home, 'grants', 'grn_selfminted.json'),
+      path.join(home, 'credentials.json'),
+      '/etc/cron.d/hats',
+      '../../etc/hosts',
+      '~/.ssh/authorized_keys',
+    ]) {
+      const check = await checkGrants('write_file', { path: escape }, WS);
+      assert.equal(check.allowed, false, `wildcard grant authorised ${escape}`);
+      assert.match(check.reason, /outside the workspace/);
+    }
+  } finally {
+    await cleanup(home);
+  }
+});
+
+test('a narrow path grant is not dodged by respelling the same file', async () => {
+  const home = await tempHome();
+  try {
+    await createGrant({
+      tools: ['write_file'],
+      scope: { paths: ['reports/**'] },
+      reason: 'nightly summary',
+    });
+    // Same file, four spellings. All in scope, because they are compared after resolution.
+    for (const spelling of ['reports/a.md', './reports/a.md', 'reports/../reports/a.md', `${WS}/reports/a.md`]) {
+      const check = await checkGrants('write_file', { path: spelling }, WS);
+      assert.equal(check.allowed, true, `${spelling} should be in scope`);
+    }
+    // And one that only looks like it is.
+    const sneaky = await checkGrants('write_file', { path: 'reports/../../etc/reports/a.md' }, WS);
+    assert.equal(sneaky.allowed, false);
+  } finally {
+    await cleanup(home);
+  }
 });
 
 /**

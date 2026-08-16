@@ -107,29 +107,84 @@ export function runDir(slug: string, runId: string): string {
 }
 
 /**
+ * The runtime's own control plane: the files under $HATS_HOME that decide what the agent
+ * is allowed to do next.
+ *
+ * $HATS_HOME has to be inside the agent's scope — run artifacts and the workspace store
+ * live there. But it also holds the permissions themselves, and a root that contains both
+ * the work and the rules about the work is not a boundary. Without this list, `write_file`
+ * with an absolute path into `grants/` mints a standing grant that `hats grant add` would
+ * have refused to create, and the next unattended run reads it back as authority.
+ *
+ * `secret` is refused in both directions. `readOnly` may be read — knowing your own
+ * permissions is reasonable, and a human browsing the panel expects to see their config —
+ * but is written only through the command or tool that owns it, never as a file.
+ */
+export function controlPlane(home = hatsHome()): { secret: string[]; readOnly: string[] } {
+  return {
+    secret: [path.join(home, 'credentials.json')],
+    readOnly: [
+      path.join(home, 'config.json'),
+      path.join(home, 'grants'),
+      path.join(home, 'schedules'),
+      path.join(home, 'scheduler.lock'),
+      path.join(home, 'tools'),
+      // rule/proposals-not-live: agent writes go to proposals and nowhere else, and the
+      // live catalogues are written only by human promotion.
+      path.join(home, 'registry'),
+    ],
+  };
+}
+
+export interface GuardLimits {
+  /** Refused for both read and write. */
+  secret?: string[];
+  /** Readable, but never writable through a path. */
+  readOnly?: string[];
+}
+
+/**
  * Resolves a candidate path and refuses anything that escapes the declared roots.
  * Non-existent targets are allowed (you have to be able to create a file) but their
  * nearest existing ancestor is realpath'd, so `ok/../../../etc/passwd` and a symlinked
  * parent are both caught.
+ *
+ * Containment is necessary but not sufficient: a path can be inside a root and still be
+ * something the caller has no business touching, which is what `secret` and `readOnly`
+ * exist for. Both are checked here, in the one place, rather than at each call site.
  */
 export class PathGuard {
   private readonly roots: string[];
+  private readonly secret: string[];
+  private readonly readOnly: string[];
 
-  constructor(roots: string[]) {
+  constructor(roots: string[], limits: GuardLimits = {}) {
     this.roots = roots
       .filter(Boolean)
       .map((r) => (existsSync(r) ? realpathSync(r) : path.resolve(r)));
     if (this.roots.length === 0) {
       throw new HatsError('INTERNAL', 'PathGuard constructed with no roots', {});
     }
+    // Canonicalised exactly as candidates are, and for the same reason. `existsSync ?
+    // realpathSync` is not enough here: on a fresh install `grants/` has not been created
+    // yet, so it would be compared un-canonicalised while the candidate arrives as a
+    // realpath — /var against /private/var, and the protection silently does nothing.
+    const settle = (list: string[]): string[] =>
+      list.filter(Boolean).map((p) => realpathOfNearestAncestor(path.resolve(p)));
+    this.secret = settle(limits.secret ?? []);
+    this.readOnly = settle(limits.readOnly ?? []);
   }
 
   get declaredRoots(): readonly string[] {
     return this.roots;
   }
 
-  /** @param base directory relative paths resolve against (normally the workspace root). */
-  resolve(candidate: string, base?: string): string {
+  /**
+   * @param base directory relative paths resolve against (normally the workspace root).
+   * @param mode what the caller is about to do. Defaults to `read`: a caller that forgets
+   *   to say gets the weaker capability, never the stronger one.
+   */
+  resolve(candidate: string, base?: string, mode: 'read' | 'write' = 'read'): string {
     if (typeof candidate !== 'string' || candidate.length === 0) {
       throw new HatsError('SCOPE_DENIED', 'empty path', { candidate });
     }
@@ -142,26 +197,49 @@ export class PathGuard {
     const absolute = path.resolve(base ?? this.roots[0]!, expanded);
     const real = realpathOfNearestAncestor(absolute);
 
-    for (const root of this.roots) {
-      if (real === root || real.startsWith(root + path.sep)) return real;
+    const inside = this.roots.some((root) => real === root || real.startsWith(root + path.sep));
+    if (!inside) {
+      throw new HatsError(
+        'SCOPE_DENIED',
+        `path is outside the workspace: ${candidate}`,
+        { candidate, resolved: real, roots: this.roots },
+        'rule/workspace-scope',
+      );
     }
-    throw new HatsError(
-      'SCOPE_DENIED',
-      `path is outside the workspace: ${candidate}`,
-      { candidate, resolved: real, roots: this.roots },
-      'rule/workspace-scope',
-    );
+
+    if (under(real, this.secret)) {
+      throw new HatsError(
+        'SCOPE_DENIED',
+        `${candidate} holds credentials and is not readable through a tool`,
+        { candidate, resolved: real },
+        'rule/workspace-scope',
+      );
+    }
+    if (mode === 'write' && under(real, this.readOnly)) {
+      throw new HatsError(
+        'SCOPE_DENIED',
+        `${candidate} is part of the runtime's own configuration and cannot be written as a ` +
+          `file — change it with the command or tool that owns it, so the change is checked`,
+        { candidate, resolved: real },
+        'rule/workspace-scope',
+      );
+    }
+    return real;
   }
 
   /** Non-throwing form, for building the model-visible file listings. */
-  contains(candidate: string, base?: string): boolean {
+  contains(candidate: string, base?: string, mode: 'read' | 'write' = 'read'): boolean {
     try {
-      this.resolve(candidate, base);
+      this.resolve(candidate, base, mode);
       return true;
     } catch {
       return false;
     }
   }
+}
+
+function under(real: string, list: readonly string[]): boolean {
+  return list.some((p) => real === p || real.startsWith(p + path.sep));
 }
 
 function realpathOfNearestAncestor(absolute: string): string {

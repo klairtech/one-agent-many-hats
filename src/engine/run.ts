@@ -11,7 +11,7 @@ import path from 'node:path';
 import type { HatsConfig, Profile, Tier } from '../core/config.js';
 import { HatsError, isHatsError, toHatsError } from '../core/errors.js';
 import { Logger } from '../core/logger.js';
-import { PathGuard, hatsHome, runDir, workspaceSlug } from '../core/paths.js';
+import { PathGuard, controlPlane, hatsHome, runDir, workspaceSlug } from '../core/paths.js';
 import { appendJsonl, ensureDir, newRunId, utcStamp, writeJsonAtomic } from '../core/store.js';
 import type { MemoryLayers } from '../memory/index.js';
 import type { ProviderPool } from '../providers/index.js';
@@ -186,7 +186,10 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
     profile,
     stage,
     config: opts.config,
-    guard: new PathGuard([opts.workspaceRoot, hatsHome()]),
+    // $HATS_HOME is in scope for run artifacts and the workspace store, so the control
+    // plane inside it is fenced off explicitly — otherwise a write_file into grants/ is a
+    // standing permission the agent issued to itself.
+    guard: new PathGuard([opts.workspaceRoot, hatsHome()], controlPlane()),
     artifacts,
     logger,
     memory: opts.memory,
