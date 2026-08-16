@@ -1,16 +1,20 @@
 ---
 id: outcome/change
 kind: outcome
-version: 6
+version: 8
 description: Make a bounded edit to files in the workspace, reproduced first and verified after.
 tools:
   - list_dir
   - read_file
+  - plan_tasks
+  - update_task
   - search_files
   - search_documents
   - write_file
   - apply_patch
   - run_command
+  - command_output
+  - stop_command
   - derive_metric
   - check_consistency
   - recall_memory
@@ -65,6 +69,13 @@ One change, matched to the surrounding code, verified by running something.
 5. **Verify by running.** `run_command` the project's own test or build command. If it does
    not exist or does not run here, say "not executed" — never describe intended behaviour
    as observed behaviour.
+
+   A suite that takes minutes should be started with `background: true` and read with
+   `command_output`. Waiting is capped at ten minutes and a command that hits the cap loses
+   everything it printed — the work happened and the output is gone. Starting one returns an
+   id in milliseconds, which is a success that means nothing yet: until you have read it you
+   know that it began, not that it passed. Anything you leave running, stop with
+   `stop_command`; a server holds its port until something kills it.
 
 ## Quality bar
 

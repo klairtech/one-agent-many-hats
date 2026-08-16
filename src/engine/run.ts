@@ -530,6 +530,7 @@ async function runAgentInner(opts: RunOptions, runId: string, slug: string): Pro
               content: observation.summary,
               toolCallId: call.id,
               name: call.name,
+              ...(observation.images?.length ? { images: observation.images } : {}),
             });
           }
 
@@ -612,6 +613,7 @@ async function runAgentInner(opts: RunOptions, runId: string, slug: string): Pro
             draft: prior,
             artifacts: artifacts.all(),
             reviewRequired: outcome.review,
+            runId: ctx.runId,
             reviewVerdict,
             usedTools: observations.length > 0,
             observations,
@@ -639,6 +641,7 @@ async function runAgentInner(opts: RunOptions, runId: string, slug: string): Pro
           draft,
           artifacts: artifacts.all(),
           reviewRequired: outcome.review,
+          runId: ctx.runId,
           ...(reviewVerdict ? { reviewVerdict } : {}),
           usedTools: observations.length > 0,
           observations,

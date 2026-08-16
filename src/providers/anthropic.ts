@@ -19,7 +19,13 @@ const DEFAULT_MAX_TOKENS = 4096;
 type Block =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean };
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+  | {
+      type: 'tool_result';
+      tool_use_id: string;
+      content: string | Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }>;
+      is_error?: boolean;
+    };
 
 interface AnthropicResponse {
   content?: Block[];
@@ -193,8 +199,20 @@ export function toAnthropicMessages(
       continue;
     }
     if (m.role === 'tool') {
+      // A tool_result may itself carry blocks, which is the only place an image belonging to
+      // a tool call can legally go — attaching it as a separate user turn would break the
+      // tool_use/tool_result pairing the API checks.
+      const resultContent = m.images?.length
+        ? [
+            { type: 'text' as const, text: m.content },
+            ...m.images.map((img) => ({
+              type: 'image' as const,
+              source: { type: 'base64' as const, media_type: img.mediaType, data: img.data },
+            })),
+          ]
+        : m.content;
       pushUserBlocks([
-        { type: 'tool_result', tool_use_id: m.toolCallId ?? '', content: m.content },
+        { type: 'tool_result', tool_use_id: m.toolCallId ?? '', content: resultContent },
       ]);
       continue;
     }

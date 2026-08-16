@@ -20,6 +20,19 @@ export interface ToolResult {
   artifactId?: string;
   /** Handler-level failure that the model should reason about rather than crash on. */
   failed?: boolean;
+  /**
+   * Pixels for a model that can see them. Carried separately from the summary because it is
+   * not text and must not be treated as text: it goes to the provider as an image block, or
+   * is dropped by an adapter that has nowhere to put it.
+   */
+  images?: ImageAttachment[];
+}
+
+export interface ImageAttachment {
+  /** image/png, image/jpeg, image/gif or image/webp. */
+  mediaType: string;
+  /** Base64, without a data: prefix. */
+  data: string;
 }
 
 export interface ApprovalRequest {
@@ -136,6 +149,8 @@ export interface ToolObservation {
   errorCode?: string;
   ruleId?: string;
   durationMs: number;
+  /** Carried to the message the model sees; never written to the artifact record. */
+  images?: ImageAttachment[];
 }
 
 export type { ToolSpec };
