@@ -40,6 +40,7 @@ import { CATALOGUE, OllamaAdmin, SUGGESTED, catalogueWithSizes, searchHuggingFac
 import { collectOutputs } from './outputs.js';
 import { listGeneratedTools } from '../tools/generated/store.js';
 import { DELIBERATELY_OMITTED, MCP_CATALOGUE } from './mcp-catalogue.js';
+import { prepareSignIn, readTokens, tokenKey, type PendingAuthorization } from '../mcp/oauth.js';
 import { renderPage } from './page.js';
 import { catalogue, quote } from './pricing.js';
 
@@ -141,6 +142,8 @@ export async function startUi(
   const schedulerRunning = () => scheduler !== undefined;
   let channels: import('../channels/index.js').ChannelManager | undefined;
   let channelLoop: NodeJS.Timeout | undefined;
+  /** Sign-ins waiting on a browser, so a second click does not open a second listener. */
+  const signIns = new Map<string, PendingAuthorization>();
   const channelsRunning = () => channels !== undefined;
 
   const server = createServer(async (req, res) => {
@@ -913,6 +916,8 @@ export async function startUi(
               disabled: cfg.disabled === true,
               trustedTools: cfg.trustedTools ?? [],
               connected: Boolean(conn?.ok),
+              remote: Boolean(cfg.url),
+              signedIn: Boolean(readTokens(id)),
               error: conn?.error ?? null,
               toolCount: conn?.toolCount ?? 0,
               tools: session.handlers
@@ -940,10 +945,37 @@ export async function startUi(
 
         if (body.action === 'remove') {
           delete servers[id];
+          // A connector that is gone must not leave a usable token behind it.
+          await setCredential(tokenKey(id), '');
         } else if (body.action === 'toggle') {
           const cur = servers[id];
           if (!cur) return json(res, 404, { error: 'no such connector' });
           servers[id] = { ...cur, disabled: !cur.disabled };
+        } else if (body.action === 'signin') {
+          const cfg = (session.config.mcpServers ?? {})[id];
+          if (!cfg?.url) {
+            return json(res, 400, { error: 'only a remote connector can sign in — a local one runs as your own user' });
+          }
+          // The panel never sees a code, a verifier or a token. It gets a URL to open and a
+          // promise that settles when the provider redirects back to the loopback listener.
+          const pending = await prepareSignIn({ server: id, url: cfg.url });
+          signIns.set(id, pending);
+          void pending.completed
+            .then(() => signIns.delete(id))
+            .catch(() => signIns.delete(id));
+          return json(res, 200, { authorizeUrl: pending.authorizeUrl, issuer: pending.issuer });
+        } else if (body.action === 'signin-status') {
+          const tokens = readTokens(id);
+          return json(res, 200, {
+            signedIn: Boolean(tokens),
+            waiting: signIns.has(id),
+            expiresAt: tokens?.expiresAt ?? null,
+          });
+        } else if (body.action === 'signout') {
+          await setCredential(tokenKey(id), '');
+          signIns.get(id)?.cancel();
+          signIns.delete(id);
+          return json(res, 200, { ok: true, signedOut: true });
         } else if (body.action === 'catalogue') {
           const entry = MCP_CATALOGUE.find((c) => c.id === id);
           if (!entry) return json(res, 404, { error: 'no catalogue entry with that id' });

@@ -11,12 +11,12 @@
  * it went in; `verified` records the version that answered. Anything that could not be made
  * to handshake is absent rather than listed hopefully.
  *
- * **Why there is nothing here you sign into.** The obvious candidates — GitHub, Linear,
- * Notion, Sentry — authenticate with OAuth: a browser redirect, dynamic client
- * registration, a token to store and refresh. This client sends static headers and has no
- * OAuth flow at all, so every one of those would be an entry that cannot connect. Offering
- * them would be a menu of disappointments. They become possible the day the client learns
- * the authorization-code flow, and not before.
+ * **On the servers you sign into.** The obvious candidates — GitHub, Linear, Notion,
+ * Sentry — authenticate with OAuth, which this client now speaks: press Sign in on a remote
+ * connector and it discovers the provider, registers itself, and sends you there to approve.
+ * They are still absent from the list below, for a duller reason than being impossible.
+ * Their endpoint URLs move, and an entry here is a promise that the address was checked on
+ * a real machine. Add one by URL and sign in; a verified entry can follow.
  */
 
 export interface CatalogueEntry {
