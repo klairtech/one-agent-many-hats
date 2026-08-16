@@ -16,7 +16,7 @@ import { readFileSync } from 'node:fs';
 import { unlink, writeFile } from 'node:fs/promises';
 
 import { HatsError, toHatsError } from '../core/errors.js';
-import { Logger, runtimeLogger } from '../core/logger.js';
+import { Logger, flushAllLogs, runtimeLogger } from '../core/logger.js';
 import { sweepAll } from '../core/retention.js';
 import { schedulerLockPath } from '../core/paths.js';
 import { ensureDir, exists } from '../core/store.js';
@@ -99,6 +99,11 @@ export class Scheduler {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.logger.info('scheduler.stopped', { pid: process.pid });
+    // Runtime records are queued and fire-and-forget, so a daemon that exits without this
+    // loses whatever had not reached the disk yet — which is exactly the tail you want
+    // after a shutdown you did not expect.
+    await flushAllLogs();
     if (this.lockHeld) {
       await unlink(schedulerLockPath()).catch(() => undefined);
       this.lockHeld = false;
