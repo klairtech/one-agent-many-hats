@@ -620,8 +620,7 @@ export async function startUi(
           const proposal = await getProposal(body.id);
           const tool = proposal.defect?.tool;
           if (!tool) return json(res, 400, { error: 'NOT_A_DEFECT', message: 'that proposal is not a tool defect' });
-          const live = startRun(
-            [
+          const request = [
               `The tool \`${tool}\` keeps failing the same way and it is costing every run that uses it.`,
               '',
               'Read its handler under src/tools/builtin/, work out why, and call propose_patch with a fix.',
@@ -635,9 +634,11 @@ export async function startUi(
               '## The evidence',
               '',
               proposal.content,
-            ].join('\n'),
-          );
-          return json(res, 200, { runId: live.runId });
+            ].join('\n');
+          // The panel attaches to this run and streams it into the conversation, so the
+          // request goes back with the id — the transcript should say what was asked.
+          const live = startRun(request);
+          return json(res, 200, { runId: live.runId, request });
         }
         return json(res, 200, { proposal: await getProposal(body.id) });
       }

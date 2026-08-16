@@ -129,7 +129,7 @@ table.grid td{padding:9px 0;border-top:1px solid var(--line)}
 .md .md-table td{padding:8px 10px;border-bottom:1px solid var(--line)}
 .md .md-art{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;background:var(--brand-tint);color:var(--brand-strong);padding:1px 6px;border-radius:5px;white-space:nowrap}
 .paper{max-width:70ch;margin:0 auto;background:var(--canvas);border-radius:6px;box-shadow:var(--shadow);padding:38px 44px}
-.paper .md > *:first-child{margin-top:0}
+.md > *:first-child{margin-top:0}
 /* A narrow window should still be usable: collapse the sidebar to its icons rather than
    letting 236px of navigation crush the content it is navigating. */
 /* On a phone the header was taller than the first answer: the title, a subtitle that wrapped
@@ -1108,9 +1108,85 @@ async function closeSandboxCard(handle, data, runId) {
 /** One shape for a message you sent, whether it is being typed now or read back later. */
 function bubbleUser(text, at) {
   const you = st(el('div'), 'display:flex;flex-direction:column;align-items:flex-end;animation:rise .2s ease both;margin-bottom:18px');
-  you.appendChild(st(el('p', null, text), 'margin:0;font-size:15px;line-height:1.6;background:var(--surface-2);border-radius:22px 22px 6px 22px;padding:13px 19px;max-width:82%;text-wrap:pretty'));
+  const bubble = st(el('div', 'md'), 'margin:0;font-size:15px;line-height:1.6;background:var(--surface-2);border-radius:22px 22px 6px 22px;padding:13px 19px;max-width:82%;text-wrap:pretty;overflow-x:auto');
+  bubble.innerHTML = blockMd(text);
+  you.appendChild(bubble);
   you.appendChild(messageFooter({ text, at, align: 'flex-end' }));
   return you;
+}
+
+/**
+ * Block markdown for a message the person sent.
+ *
+ * The answer arrives from the server already rendered, so the only thing that was ever
+ * plain text was the question — and a question is not always a sentence. A repair request
+ * is a whole document with headings, a bulleted list of failures and code spans, and it was
+ * rendered as one paragraph with the newlines collapsed out of it, which is the least
+ * readable form of the most structured message in the thread.
+ *
+ * Line-based on purpose. This file is one long template literal, so every regex in it is
+ * written twice and read wrong once; startsWith and slice say the same thing and survive
+ * being pasted. Everything inline goes through inlineMd, which escapes before it matches,
+ * so nothing typed into the composer can become markup.
+ */
+function blockMd(text) {
+  const NEWLINE = String.fromCharCode(10);
+  const FENCE = String.fromCharCode(96, 96, 96);
+  const DIGITS = '0123456789';
+  const lines = String(text == null ? '' : text).split(NEWLINE);
+  const out = [];
+  let para = [];
+  let list = null;
+  let code = null;
+
+  const fence = (body) =>
+    '<pre class="md-code"><code>' + highlightJs(body.join(NEWLINE)) + '</code></pre>';
+
+  const flush = () => {
+    if (para.length) { out.push('<p>' + para.map(inlineMd).join('<br>') + '</p>'); para = []; }
+    if (list) {
+      out.push('<' + list.tag + ' class="md-list">' + list.items.map((i) => '<li>' + inlineMd(i) + '</li>').join('') + '</' + list.tag + '>');
+      list = null;
+    }
+  };
+
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (code !== null) {
+      if (line.trim().startsWith(FENCE)) { out.push(fence(code)); code = null; }
+      else code.push(raw);
+      continue;
+    }
+    if (line.trim().startsWith(FENCE)) { flush(); code = []; continue; }
+    if (!line.trim()) { flush(); continue; }
+
+    let level = 0;
+    while (level < line.length && line[level] === '#') level++;
+    if (level > 0 && level < 7 && line[level] === ' ') {
+      flush();
+      const tag = level < 4 ? 'h' + level : 'h3';
+      out.push('<' + tag + ' class="md-h">' + inlineMd(line.slice(level + 1)) + '</' + tag + '>');
+      continue;
+    }
+
+    const bullet = line.startsWith('- ') || line.startsWith('* ');
+    const dot = line.indexOf('. ');
+    let numbered = dot > 0 && dot < 4;
+    for (let i = 0; numbered && i < dot; i++) if (DIGITS.indexOf(line[i]) < 0) numbered = false;
+    if (bullet || numbered) {
+      const tag = bullet ? 'ul' : 'ol';
+      if (para.length || (list && list.tag !== tag)) flush();
+      if (!list) list = { tag, items: [] };
+      list.items.push(bullet ? line.slice(2) : line.slice(dot + 2));
+      continue;
+    }
+
+    if (list) flush();
+    para.push(line);
+  }
+  if (code !== null) out.push(fence(code));
+  flush();
+  return out.join('');
 }
 
 /**
@@ -1237,8 +1313,28 @@ async function doSend() {
   input.style.height = 'auto';
   suggestion = '';
   input.placeholder = ASK_DEFAULT;
+  const attached = ATTACHED.slice();
+  ATTACHED = [];
+  paintAttachments();
+  await runInChat(request, { attach: attached });
+}
+
+/**
+ * Everything a run looks like in the conversation, whether it started here or elsewhere.
+ *
+ * A run the *server* began — a repair, say — used to be invisible: the endpoint started it
+ * and returned an id nothing subscribed to, so the panel said "a run is reading the handler
+ * now" and the chat showed an empty composer. It was working the whole time, with no window
+ * onto it and no way to answer a question it asked. Passing opts.runId attaches to a run
+ * already in flight, and /api/events replays what it has already emitted, so nothing that
+ * happened before you arrived is lost.
+ */
+async function runInChat(request, opts) {
+  if (busy) return;
+  opts = opts || {};
   busy = true;
-  $('#send').disabled = true;
+  const sendBtn = $('#send');
+  if (sendBtn) sendBtn.disabled = true;
 
   const t = $('#thread');
   if (t.querySelector('h2')) t.innerHTML = '';
@@ -1268,12 +1364,11 @@ async function doSend() {
   body.appendChild(trace);
   scrollThread();
 
-  let runId;
-  const attached = ATTACHED.slice();
-  ATTACHED = [];
-  paintAttachments();
-  try { runId = (await post('/api/run', { request, attach: attached })).runId; }
-  catch (e) { answer.textContent = 'failed: ' + e.message; busy = false; $('#send').disabled = false; return; }
+  let runId = opts.runId;
+  if (!runId) {
+    try { runId = (await post('/api/run', { request, attach: opts.attach || [] })).runId; }
+    catch (e) { answer.textContent = 'failed: ' + e.message; busy = false; if (sendBtn) sendBtn.disabled = false; return; }
+  }
 
   if (source) source.close();
   source = new EventSource('/api/events?token=' + TOKEN + '&runId=' + encodeURIComponent(runId));
@@ -1307,7 +1402,8 @@ async function doSend() {
     const data = JSON.parse(m.data);
     source.close(); source = null;
     busy = false;
-    $('#send').disabled = false;
+    const btn = $('#send');
+    if (btn) btn.disabled = false;
     if (data.error) {
       status.remove();
       answer.textContent = data.error;
@@ -2623,14 +2719,19 @@ async function promoteProposal(x, btn) {
 
 async function repairProposal(x, btn) {
   if (btn) btn.disabled = true;
+  let started;
   try {
-    await post('/api/proposal', { id: x.id, action: 'repair' });
-    await say('Repairing ' + x.defect.tool, 'A run is reading the handler now. Watch it in Chat — the patch applies only if the build and the whole test suite pass.');
-    go('run');
+    started = await post('/api/proposal', { id: x.id, action: 'repair' });
   } catch (e) {
     if (btn) btn.disabled = false;
     await say('Could not start the repair', e.message);
+    return;
   }
+  // Straight into the conversation and attach to it. Telling someone to go and watch a run
+  // that renders nowhere is worse than not starting one: the repair was running the whole
+  // time, and the only thing the panel showed was an empty composer.
+  go('run');
+  await runInChat(started.request || ('Repair ' + x.defect.tool), { runId: started.runId });
 }
 
 function buildProposalDetail(host, x, actionable) {
