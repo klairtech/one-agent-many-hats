@@ -546,6 +546,82 @@ export async function startUi(
         return json(res, 200, { ok: true });
       }
 
+      case 'GET /api/outputs': {
+        // What the agent produced, per conversation.
+        //
+        // "Outputs" used to be the workspace file browser, whose own blurb said it showed
+        // the files the agent can *see* — a reading surface labelled as a producing one. The
+        // things it actually makes are artifacts, which are its evidence, and the files it
+        // wrote. Both are already on disk; nothing here was being shown.
+        const dir = path.join(workspaceDir(session.slug), 'runs');
+        const fsp = await import('node:fs/promises');
+        const ids = (await fsp.readdir(dir).catch(() => [])).sort().reverse().slice(0, 40);
+
+        const WRITERS = new Set(['write_file', 'apply_patch']);
+        const runs = [];
+        for (const id of ids) {
+          const record = await readJson<Record<string, unknown> | null>(
+            path.join(dir, id, 'run.json'),
+            null,
+          );
+          if (!record) continue;
+
+          const observations = (record['observations'] ?? []) as Array<{
+            tool?: string;
+            artifactId?: string;
+            summary?: string;
+            ok?: boolean;
+          }>;
+          const artifacts = observations
+            .filter((o) => o.artifactId)
+            .map((o) => ({ id: o.artifactId, tool: o.tool ?? '?', summary: (o.summary ?? '').slice(0, 160) }));
+
+          // Written paths come from the audit trail rather than the run record, because the
+          // record keeps the observation and the audit keeps the arguments — and the path is
+          // an argument.
+          const audit = await fsp.readFile(path.join(dir, id, 'audit.jsonl'), 'utf8').catch(() => '');
+          const files = [
+            ...new Set(
+              audit
+                .split('\n')
+                .filter((l) => l.includes('tool.call'))
+                .map((l) => {
+                  try {
+                    return JSON.parse(l) as { tool?: string; args?: Record<string, unknown> };
+                  } catch {
+                    return null;
+                  }
+                })
+                .filter((e): e is { tool?: string; args?: Record<string, unknown> } => e !== null)
+                .filter((e) => e.tool && WRITERS.has(e.tool))
+                .map((e) => String(e.args?.['path'] ?? e.args?.['file'] ?? ''))
+                .filter(Boolean),
+            ),
+          ];
+
+          if (!artifacts.length && !files.length) continue;
+          runs.push({
+            runId: id,
+            request: record['request'] ?? '',
+            at: record['startedAt'] ?? '',
+            ok: record['ok'] === true,
+            files,
+            artifacts,
+          });
+        }
+        return json(res, 200, { runs, root: session.workspaceRoot });
+      }
+
+      case 'GET /api/artifact': {
+        const runId = url.searchParams.get('runId') ?? '';
+        const id = url.searchParams.get('id') ?? '';
+        if (!/^[\w.-]+$/.test(runId) || !/^[\w]+$/.test(id)) return json(res, 400, { error: 'bad id' });
+        const file = path.join(workspaceDir(session.slug), 'runs', runId, 'artifacts', `${id}.json`);
+        const artifact = await readJson<Record<string, unknown> | null>(file, null);
+        if (!artifact) return json(res, 404, { error: 'NOT_FOUND' });
+        return json(res, 200, { artifact });
+      }
+
       case 'GET /api/proposals': {
         // The body of a proposal is a markdown document — a skill, a rule, or a defect
         // report — and the panel was showing it as preformatted text, so the reader got

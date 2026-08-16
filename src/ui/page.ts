@@ -265,7 +265,7 @@ const ICONS = {
 
 const VIEWS = [
   { id: 'run', label: 'Chat', title: 'Chat', blurb: 'One agent, one transcript. Every answer carries the evidence it was built from, and every action passed the same gates.', load: () => renderRun() },
-  { id: 'outputs', label: 'Outputs', title: 'Outputs', blurb: 'The same files the agent can see, through the same path guard. Nothing here reaches further than it does.', load: () => loadFiles('.') },
+  { id: 'outputs', label: 'Outputs', title: 'Outputs', blurb: 'What it produced, newest first: the evidence behind each answer, and the files it wrote.', load: () => loadOutputs() },
   { id: 'memory', label: 'Memory', title: 'Memory', blurb: 'What it has been told, what it noticed, and what it learned from going wrong. Yours to edit or delete.', load: () => loadMemory() },
   { id: 'proposals', label: 'Proposals', title: 'Proposals', blurb: 'What it wants to add, and what it could not add on its own. Anything blocked says why.', load: () => loadProposals() },
   { id: 'registry', label: 'Registry', title: 'Skills, rules and tools', blurb: 'Behaviour composed from files you can read. Every rule above prompt strength names the code that enforces it.', load: () => loadRegistry() },
@@ -336,9 +336,7 @@ function go(id, opts) {
   $('#view-action').hidden = true;
   $('#view-icons').innerHTML = '';
   $('#view').innerHTML = '';
-  $('#view').setAttribute('style', id === 'outputs'
-    ? 'flex:1;min-height:0;display:flex;overflow:hidden;padding:0'
-    : 'flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;padding:20px 24px 44px');
+  $('#view').setAttribute('style', 'flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;padding:20px 24px 44px');
   renderNav();
   if (!opts || opts.push !== false) syncUrl();
   v.load();
@@ -362,7 +360,7 @@ const subTabState = {};
 function subTabs(host, viewId, tabs) {
   const bar = st(el('div'), 'display:flex;gap:3px;background:var(--surface);border-radius:999px;padding:3px;align-self:flex-start;max-width:100%;overflow-x:auto;flex:none');
   bar.setAttribute('role', 'tablist');
-  const body = st(el('div'), 'margin-top:20px');
+  const body = st(el('div'), 'margin-top:20px;flex:1;min-height:0;display:flex;flex-direction:column');
   host.appendChild(bar);
   host.appendChild(body);
 
@@ -1140,8 +1138,12 @@ function extBadge(kind, name, size) {
   return st(el('span', null, ext), 'flex:none;display:grid;place-items:center;width:' + (size || 32) + 'px;height:' + (size || 32) + 'px;border-radius:9px;background:' + tone[0] + ';color:' + tone[1] + ';font-size:8.5px;font-weight:700');
 }
 
-async function loadFiles(dirPath) {
-  const v = $('#view');
+async function loadFiles(dirPath, host) {
+  // The browser used to own the whole view. It is now one tab inside Outputs, so it renders
+  // into whatever it is given and keeps its own two-column layout there.
+  const v = host || FILES_HOST || $('#view');
+  FILES_HOST = v;
+  v.setAttribute('style', 'flex:1;min-height:0;display:flex;overflow:hidden;padding:0;border:1px solid var(--line);border-radius:14px');
   v.innerHTML = '';
   const listCol = st(el('div', 'filesplit-list'), 'width:300px;flex:none;display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--line)');
   const previewCol = st(el('div'), 'flex:1;min-width:0;display:flex;flex-direction:column;min-height:0');
@@ -1919,6 +1921,110 @@ async function telegramCard() {
 
   card.appendChild(st(el('p', 'xs', 'The token is written to credentials.json at mode 0600 and never into config.json, never logged, and never returned by this page. Whoever is on the id list can start a run on this machine — a message is an unattended run, so it cannot approve its own mutations.'), 'margin:0;color:var(--ink-3);text-wrap:pretty'));
   return card;
+}
+
+/**
+ * What the agent produced, grouped by the conversation that produced it.
+ *
+ * This view used to be the workspace file browser, and its own blurb admitted it: "the same
+ * files the agent can see". That is a reading surface with a producing name on it. The
+ * things it actually makes are artifacts — the evidence every cited number comes from — and
+ * the files it wrote, and neither was anywhere in the panel.
+ *
+ * The browser survives as a second tab, because pointing a run at a file is a real job.
+ */
+let FILES_HOST = null;
+
+/** The workspace browser, as a tab. */
+function paintFileBrowser(host) {
+  FILES_HOST = host;
+  loadFiles('.', host);
+}
+
+/** Open one file in the browser tab, from a link elsewhere. */
+async function openFile(relPath) {
+  const tab = [...document.querySelectorAll('[data-tabid]')].find((b) => b.dataset.tabid === 'files');
+  if (tab) tab.click();
+  await new Promise((r) => setTimeout(r, 120));
+  showPreview(relPath);
+}
+
+async function loadOutputs() {
+  const v = $('#view');
+  v.innerHTML = '';
+  const host = st(el('div'), 'max-width:1000px;flex:1;min-height:0;display:flex;flex-direction:column');
+  subTabs(host, 'outputs', [
+    { id: 'produced', label: 'Produced', render: (body) => paintProduced(body) },
+    { id: 'files', label: 'Workspace files', render: (body) => paintFileBrowser(body) },
+  ]);
+  v.appendChild(host);
+}
+
+async function paintProduced(host) {
+  host.innerHTML = '<p class="sm" style="color:var(--ink-2)">Loading…</p>';
+  const d = await api('/api/outputs');
+  host.innerHTML = '';
+  if (!d.runs.length) {
+    host.appendChild(st(el('p', 'sm', 'Nothing produced yet. Artifacts appear as soon as a run reads or computes anything — they are what its citations point at.'), 'color:var(--ink-2);text-wrap:pretty'));
+    return;
+  }
+
+  const wrap = st(el('div'), 'display:flex;flex-direction:column;gap:10px');
+  d.runs.forEach((r) => {
+    const card = st(el('section'), 'background:var(--surface);border-radius:14px;overflow:hidden');
+
+    const head = st(el('button'), 'display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:0;background:none;color:inherit;font-family:inherit;padding:13px 16px;cursor:pointer');
+    head.appendChild(statusPill(r.ok ? 'ok' : 'incomplete', r.ok ? 'ok' : 'warn'));
+    head.appendChild(st(el('span', 'sm', r.request || '(no request)'), 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'));
+    if (r.files.length) head.appendChild(st(el('span', 'xs', r.files.length + (r.files.length === 1 ? ' file' : ' files')), 'color:var(--ok);font-weight:600;flex:none'));
+    head.appendChild(st(el('span', 'xs num', r.artifacts.length + ' artifacts'), 'color:var(--ink-3);flex:none'));
+    head.appendChild(st(el('span', 'xs num', relativeTime(r.at)), 'color:var(--ink-3);flex:none'));
+    card.appendChild(head);
+
+    const body = st(el('div'), 'display:none;padding:0 16px 14px');
+    head.onclick = () => {
+      const open = body.style.display === 'block';
+      body.style.display = open ? 'none' : 'block';
+      if (!open && !body.dataset.built) buildOutputDetail(body, r);
+    };
+    card.appendChild(body);
+    wrap.appendChild(card);
+  });
+  host.appendChild(wrap);
+}
+
+function buildOutputDetail(host, r) {
+  host.dataset.built = '1';
+
+  // Files first: they are the part that outlives the run.
+  if (r.files.length) {
+    host.appendChild(st(el('p', 'xs', 'files written'), 'margin:8px 0 0;color:var(--ink-3);font-weight:600'));
+    const list = st(el('div'), 'display:flex;flex-direction:column;gap:4px;margin-top:5px');
+    r.files.forEach((f) => {
+      const b = st(el('button', 'xs mono'), 'text-align:left;border:0;background:none;color:var(--brand-strong);font-family:ui-monospace,monospace;cursor:pointer;padding:2px 0');
+      b.textContent = f;
+      b.onclick = () => { go('outputs'); setTimeout(() => openFile(f), 60); };
+      list.appendChild(b);
+    });
+    host.appendChild(list);
+  }
+
+  host.appendChild(st(el('p', 'xs', 'artifacts — what its citations point at'), 'margin:12px 0 0;color:var(--ink-3);font-weight:600'));
+  const list = st(el('div'), 'display:flex;flex-direction:column;gap:1px;margin-top:6px;background:var(--line);border-radius:10px;overflow:hidden');
+  r.artifacts.forEach((a) => {
+    const row = st(el('button'), 'display:flex;gap:9px;align-items:baseline;width:100%;text-align:left;border:0;background:var(--canvas);color:inherit;font-family:inherit;padding:8px 11px;cursor:pointer');
+    row.appendChild(st(el('span', 'xs mono', a.id), 'color:var(--brand-strong);flex:none'));
+    row.appendChild(st(el('span', 'xs', a.tool), 'color:var(--ink-3);flex:none'));
+    row.appendChild(st(el('span', 'xs', a.summary), 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2)'));
+    row.onclick = async () => {
+      try {
+        const d = await api('/api/artifact?runId=' + encodeURIComponent(r.runId) + '&id=' + encodeURIComponent(a.id));
+        await say(a.id, JSON.stringify(d.artifact.payload, null, 2).slice(0, 6000));
+      } catch (e) { await say('Could not open it', e.message); }
+    };
+    list.appendChild(row);
+  });
+  host.appendChild(list);
 }
 
 async function loadProposals() {
