@@ -37,7 +37,8 @@ export const sandboxRun: ToolHandler = {
         },
         code: {
           type: 'string',
-          description: 'The snippet. Must end with a `return` of a JSON-serialisable object.',
+          description:
+            'The snippet. Must end with a `return` of a JSON-serialisable object. No comments — the code is thrown away after this call, so a comment is paid for twice (writing it, then re-reading it on every retry) and read by nobody. Name things well instead.',
         },
         artifact_ids: {
           type: 'array',

@@ -25,6 +25,25 @@ export interface ClaimCheck {
   detail: string;
 }
 
+/**
+ * Failures the run never got past.
+ *
+ * A tool that failed and was then called again successfully is not an incomplete piece of
+ * work — it is the recovery loop doing exactly what it exists for. Counting those made the
+ * gate fire on its own success: a run wrote a sandbox snippet, hit an unbound artifact,
+ * fixed it, hit a wrong type, fixed that, got its answer on the third go, and was told its
+ * answer was unverified because two calls had failed along the way.
+ *
+ * Recovery is per tool and forward-looking: a later success by the same tool clears the
+ * earlier failures, and a failure with nothing after it still counts.
+ */
+function unrecovered(observations: ToolObservation[]): ToolObservation[] {
+  return observations.filter((o, i) => {
+    if (o.ok) return false;
+    return !observations.slice(i + 1).some((later) => later.ok && later.tool === o.tool);
+  });
+}
+
 /** Words that assert a whole set was handled. The ones that turn 11 into 12. */
 const COMPLETION = /\b(all|every|each|both|complete[d]?|entire|whole|fully|everything|no remaining|none left|nothing left)\b/i;
 
@@ -40,7 +59,7 @@ const COMPLETION = /\b(all|every|each|both|complete[d]?|entire|whole|fully|every
  * ordinary prose gets switched off within a week.
  */
 export function completionClaimed(draft: string, observations: ToolObservation[]): ClaimCheck {
-  const failed = observations.filter((o) => !o.ok);
+  const failed = unrecovered(observations);
   const sentences = draft.split(/(?<=[.!?])\s+|\n/).filter((s) => COMPLETION.test(s));
   if (sentences.length === 0) return { ok: true, detail: 'no completeness claim to check' };
 
@@ -57,7 +76,10 @@ export function completionClaimed(draft: string, observations: ToolObservation[]
     };
   }
 
-  return { ok: true, detail: `${sentences.length} completeness claim(s), no failed tool calls` };
+  return {
+    ok: true,
+    detail: `${sentences.length} completeness claim(s), nothing left failing`,
+  };
 }
 
 /** Language that promises a file exists: "ready for download", "attached", "saved to". */

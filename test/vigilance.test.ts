@@ -195,3 +195,28 @@ test('the honest close is exactly what the gate is trying to produce', () => {
     assert.equal(promisedFileNotWritten(honest, [obs({ tool: 'sandbox_run' })]).ok, true, honest);
   }
 });
+
+/**
+ * A failure the run recovered from is the recovery loop working, not an incomplete job.
+ *
+ * Live: a run wrote a sandbox snippet, hit an unbound artifact, fixed it, hit a wrong type,
+ * fixed that, got its answer on the third attempt — and was told the answer was unverified
+ * because two calls had failed along the way. The gate fired on its own success.
+ */
+test('a tool that failed and then succeeded does not count against completeness', () => {
+  const draft = 'Exhaustive searches across src/ return no matches across all 102 files.';
+  const recovered = [
+    obs({ tool: 'sandbox_run', ok: false }),
+    obs({ tool: 'sandbox_run', ok: false }),
+    obs({ tool: 'sandbox_run', ok: true }),
+  ];
+  assert.equal(completionClaimed(draft, recovered).ok, true, 'recovered failures still blocked');
+
+  // A failure with nothing after it is still a failure, which is the whole point.
+  const stuck = [obs({ tool: 'sandbox_run', ok: true }), obs({ tool: 'search_files', ok: false })];
+  assert.equal(completionClaimed(draft, stuck).ok, false, 'an unrecovered failure was let through');
+
+  // And recovery is per tool: another tool succeeding proves nothing about this one.
+  const wrongTool = [obs({ tool: 'search_files', ok: false }), obs({ tool: 'read_file', ok: true })];
+  assert.equal(completionClaimed(draft, wrongTool).ok, false, 'a different tool cleared the failure');
+});

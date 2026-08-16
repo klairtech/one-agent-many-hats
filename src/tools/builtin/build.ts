@@ -49,7 +49,7 @@ export const buildTool: ToolHandler = {
         code: {
           type: 'string',
           description:
-            'An ES module exporting `export async function run(args, ctx)` and returning {summary, payload}. ctx gives you workspaceRoot, profile, credentials (an object keyed by the names you list below) and ctx.import(specifier) for node builtins. Constraints that are not negotiable: no npm packages (there is no node_modules — an import of @aws-sdk or similar fails to resolve), no import from this repository, and no top-level await on anything slow. For an API, call its HTTP endpoint with fetch and sign the request yourself.',
+            'An ES module exporting `export async function run(args, ctx)` and returning {summary, payload}. ctx gives you workspaceRoot, profile, credentials (an object keyed by the names you list below) and ctx.import(specifier) for node builtins. Constraints that are not negotiable: no npm packages (there is no node_modules — an import of @aws-sdk or similar fails to resolve), no import from this repository, and no top-level await on anything slow. For an API, call its HTTP endpoint with fetch and sign the request yourself. Keep comments to the ones that explain a decision a reader could not infer; narrating what the next line does costs tokens on every retry and tells nobody anything.',
         },
         mutating: {
           type: 'boolean',

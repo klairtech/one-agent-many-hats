@@ -275,6 +275,9 @@ function toggleTheme() {
 
 // --- views ------------------------------------------------------------------------
 const ICONS = {
+  up: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11v9H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z"/><path d="M7 11l4.2-8.1a2 2 0 0 1 3.7 1.3L14 9h4.6a2 2 0 0 1 2 2.4l-1.4 7A2 2 0 0 1 17.2 20H7"/></svg>',
+  down: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 13V4h3a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1z"/><path d="M17 13l-4.2 8.1a2 2 0 0 1-3.7-1.3L10 15H5.4a2 2 0 0 1-2-2.4l1.4-7A2 2 0 0 1 6.8 4H17"/></svg>',
+  pencil: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
   copy: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
   tick: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m20 6-11 11-5-5"/></svg>',
   filter: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M7 12h10"/><path d="M10 18h4"/></svg>',
@@ -582,10 +585,19 @@ function renderRun() {
   attach.setAttribute('aria-label', 'Attach files from this workspace');
   st(attach, 'display:inline-flex;align-items:center;justify-content:center;padding:11px;line-height:0;border-radius:999px');
   attach.onclick = openAttach;
-  const input = el('input', 'fld');
+  // A textarea rather than an input, because Shift-Enter has to be able to make a line —
+  // an input cannot hold one. It starts one line tall and grows with the content, so the
+  // common case still looks like a single-line box.
+  const input = el('textarea', 'fld');
   input.id = 'prompt';
-  input.placeholder = 'Ask about this workspace…';
-  st(input, 'flex:1;border-radius:999px;padding:13px 18px');
+  input.rows = 1;
+  input.placeholder = ASK_DEFAULT;
+  st(input, 'flex:1;border-radius:22px;padding:13px 18px;resize:none;font-family:inherit;font-size:14px;line-height:1.5;max-height:9em;overflow-y:auto');
+  const grow = () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 144) + 'px';
+  };
+  input.addEventListener('input', grow);
   const send = el('button', 'btn1', 'Send');
   send.id = 'send';
   wrap.appendChild(attach); wrap.appendChild(input); wrap.appendChild(send);
@@ -594,13 +606,29 @@ function renderRun() {
   paintAttachments();
 
   send.onclick = doSend;
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSend(); });
+  input.addEventListener('keydown', (e) => {
+    // Tab completes the suggested follow-up into the box rather than sending it. It arrives
+    // as text you can read, edit or delete — sending something the person never wrote would
+    // be a surprise once and a trap every time after.
+    if (e.key === 'Tab' && suggestion && !input.value.trim()) {
+      e.preventDefault();
+      input.value = suggestion;
+      grow();
+      return;
+    }
+    if (e.key !== 'Enter') return;
+    if (e.shiftKey) return; // a new line, which is why this is a textarea
+    e.preventDefault();
+    doSend();
+  });
 
   // Conversation-level actions live in the header, not next to the input.
   headIcon(ICONS.history, 'Past conversations — open one to read it and carry on', () => go('history'));
   headIcon(ICONS.compose, 'New conversation. Memory is untouched.', () => {
     chatHistory = [];
     resumedRun = null;
+    suggestion = '';
+    input.placeholder = ASK_DEFAULT;
     inner.innerHTML = '';
     renderIdle();
   });
@@ -609,6 +637,69 @@ function renderRun() {
   send.disabled = !bound;
   if (!bound) input.placeholder = 'Connect a model first — see Setup';
   renderIdle();
+}
+
+const ASK_DEFAULT = 'Ask what I should do for you';
+
+/** The follow-up currently offered in the composer, or '' when there is none. */
+let suggestion = '';
+
+/**
+ * What to ask next, from what actually happened.
+ *
+ * Deliberately derived rather than generated. A second model call per run would produce a
+ * smoother sentence and cost a request every time, and the useful follow-ups after a run
+ * are not really open-ended: something was disclosed, something was built, something was
+ * counted. Each of these points at a thing the run itself did, so none of them can suggest
+ * work the agent has no basis for.
+ */
+function suggestFollowUp(r) {
+  if (!r) return '';
+
+  // A declared gap is the most useful thing to pull on, and the easiest to forget.
+  const gap = (r.gateFindings || []).find((g) => !g.passed);
+  if (gap) return 'Close the gap you flagged';
+
+  if (r.ok === false) return 'What stopped you finishing?';
+
+  const answer = String(r.answer || '');
+
+  // No regular expressions in this file. It is one long template literal, so a backslash-d
+  // arrives as a plain d and a backslash-b as a backspace, and the pattern then matches
+  // nothing at all while looking perfectly correct. Plain string work cannot be eaten.
+  // Built from code points: an escape here would be eaten by the template literal.
+  const STOP = ' ,.;:)"' + String.fromCharCode(39) + String.fromCharCode(9) + String.fromCharCode(10);
+  const after = (marker) => {
+    const at = answer.toLowerCase().indexOf(marker);
+    if (at < 0) return '';
+    const rest = answer.slice(at + marker.length).trim();
+    let end = 0;
+    while (end < rest.length && STOP.indexOf(rest[end]) < 0) end++;
+    return rest.slice(0, end);
+  };
+
+  // A tool it wrote is worth using again while the context is still here.
+  const built = after('built and installed ');
+  if (built) return 'Use ' + built + ' again for something else';
+
+  const wrote = after('wrote to ') || after('saved to ');
+  if (wrote) return 'Show me what you put in ' + wrote;
+
+  if (r.outcomeId === 'outcome/research') return 'Turn this into a one-page brief';
+  if (r.outcomeId === 'outcome/change') return 'Show me exactly what changed';
+  if (r.outcomeId === 'outcome/investigate') return 'What would you check next?';
+
+  // The first bolded figure is the claim most worth pulling on in an ordinary answer.
+  if (r.artifactCount) {
+    const open = answer.indexOf('**');
+    const close = open >= 0 ? answer.indexOf('**', open + 2) : -1;
+    if (close > open) {
+      const bold = answer.slice(open + 2, close).trim();
+      if (bold && bold.length < 40 && /[0-9]/.test(bold)) return 'How did you arrive at ' + bold + '?';
+    }
+  }
+
+  return 'What else should I look at?';
 }
 
 const EXAMPLES = [
@@ -906,14 +997,15 @@ function openSandboxCard(host, code, before) {
   };
   head.appendChild(copy);
   card.appendChild(head);
-  card.appendChild(collapsible(pre, source.split('\\n').length, 'lines of code'));
+  const folder = collapsible(pre, source.split('\\n').length, 'lines of code');
+  card.appendChild(folder.node || folder);
 
   // Inserted above the answer rather than appended, because the answer element is created
   // empty at the start and filled at the end: appending would put every piece of working
   // below the conclusion it produced.
   if (before && before.parentElement === host) host.insertBefore(card, before);
   else host.appendChild(card);
-  return { card, state };
+  return { card, state, fold: folder.fold };
 }
 
 /**
@@ -925,35 +1017,47 @@ function openSandboxCard(host, code, before) {
  * which is the difference between a summary and a truncation.
  */
 function collapsible(inner, count, noun, foldOver = 14) {
-  if (count <= foldOver) return inner;
+  const baseStyle = inner.getAttribute('style') || '';
+  const toggle = el('button', 'xs');
+  st(toggle, 'display:block;width:100%;border:0;border-top:1px solid #333c4a;background:#1c222c;color:#8b97a8;font-family:inherit;font-size:11.5px;padding:7px;cursor:pointer');
 
   const box = st(el('div'), 'position:relative');
-  st(inner, inner.getAttribute('style') + ';max-height:230px;overflow:hidden');
   box.appendChild(inner);
-
   const fade = st(el('div'), 'position:absolute;left:0;right:0;bottom:0;height:56px;pointer-events:none;background:linear-gradient(rgba(35,42,53,0),#232a35)');
   box.appendChild(fade);
-
-  const toggle = el('button', 'xs');
-  toggle.textContent = 'Show all ' + count + ' ' + noun;
-  st(toggle, 'display:block;width:100%;border:0;border-top:1px solid #333c4a;background:#1c222c;color:#8b97a8;font-family:inherit;font-size:11.5px;padding:7px;cursor:pointer');
-  toggle.onclick = () => {
-    const folded = fade.style.display !== 'none';
-    inner.style.maxHeight = folded ? 'none' : '230px';
-    fade.style.display = folded ? 'none' : 'block';
-    toggle.textContent = folded ? 'Show less' : 'Show all ' + count + ' ' + noun;
-  };
 
   const wrap = st(el('div'), '');
   wrap.appendChild(box);
   wrap.appendChild(toggle);
-  return wrap;
+
+  let folded = false;
+  const paint = () => {
+    inner.setAttribute('style', baseStyle + (folded ? ';max-height:230px;overflow:hidden' : ''));
+    fade.style.display = folded ? 'block' : 'none';
+    toggle.textContent = folded ? 'Show all ' + count + ' ' + noun : 'Show less';
+  };
+  const fold = () => { folded = true; paint(); };
+  toggle.onclick = () => { folded = !folded; paint(); };
+
+  // Long by default folds; short stays open until something folds it deliberately.
+  folded = count > foldOver;
+  paint();
+  return { node: wrap, fold };
 }
 
 async function closeSandboxCard(handle, data, runId) {
   const ok = data.ok !== false;
   handle.state.textContent = '';
-  handle.state.appendChild(statusPill(ok ? 'returned' : 'rejected', ok ? 'ok' : 'dang'));
+  handle.state.appendChild(statusPill(ok ? 'returned' : 'rejected', ok ? 'ok' : 'idle'));
+
+  // A rejected attempt is the agent correcting itself, and it usually takes two or three
+  // goes. Shown at full size they dominate the answer they were working towards — three
+  // screens of nearly identical code, the last one of which is the only one that ran. It
+  // folds to its header, openable, and stops competing with the result.
+  if (!ok) {
+    handle.card.style.opacity = '.62';
+    if (handle.fold) handle.fold();
+  }
 
   // The whole result, not the bounded one.
   //
@@ -978,7 +1082,7 @@ async function closeSandboxCard(handle, data, runId) {
   wrap.appendChild(st(el('p', 'xs', ok ? 'returned' : 'rejected'), 'margin:0;padding:9px 17px 0;color:#8b97a8;font-weight:600'));
   const pre = st(el('pre', 'mono'), 'margin:0;padding:5px 17px 14px;overflow-x:auto;line-height:1.6;font-size:12.5px;color:' + (ok ? '#a9dcc8' : '#e9a8a8') + ';text-wrap:wrap;word-break:break-word');
   pre.textContent = text;
-  wrap.appendChild(collapsible(pre, text.split('\\n').length, 'lines'));
+  wrap.appendChild(collapsible(pre, text.split('\\n').length, 'lines').node);
   handle.card.appendChild(wrap);
 }
 
@@ -1084,9 +1188,23 @@ async function openArtifact(runId, id) {
     // The endpoint returns the artifact flat, with the payload already stringified and
     // bounded at 40k — it says so with truncated, and names the file holding the rest.
     const a = await api('/api/artifact?runId=' + encodeURIComponent(runId) + '&id=' + encodeURIComponent(id));
-    const body = a.payload && a.payload !== 'null' ? a.payload : a.summary || '(no payload)';
-    const tail = a.truncated ? '\\n\\n[' + a.payloadChars + ' characters in total. The whole thing is at ' + a.file + ']' : '';
-    await say(id + (a.tool ? '  ·  ' + a.tool : ''), body + tail);
+    const NL = String.fromCharCode(10);
+
+    // Summary first, payload second, and the payload only when it adds something.
+    //
+    // A search that found nothing has a payload of exactly [] and showing that alone is how
+    // a citation opens onto an empty box: the reader clicks the evidence behind "no matches"
+    // and is shown two brackets. The sentence saying what found nothing is the summary, and
+    // for several tools it is the whole of the evidence.
+    const payload = String(a.payload == null ? '' : a.payload).trim();
+    const thin = !payload || payload === 'null' || payload === '[]' || payload === '{}';
+    const parts = [];
+    if (a.summary) parts.push(a.summary);
+    if (!thin) parts.push((a.summary ? NL + NL : '') + payload);
+    if (!parts.length) parts.push('This artifact recorded no detail beyond the fact that the call happened.');
+    if (a.truncated) parts.push(NL + NL + '[' + a.payloadChars + ' characters in total. The whole thing is at ' + a.file + ']');
+
+    await say(id + (a.tool ? '  ·  ' + a.tool : ''), parts.join(''));
   } catch (e) {
     await say('Could not open ' + id, e.message);
   }
@@ -1097,6 +1215,9 @@ async function doSend() {
   const request = (input.value || '').trim();
   if (!request || busy) return;
   input.value = '';
+  input.style.height = 'auto';
+  suggestion = '';
+  input.placeholder = ASK_DEFAULT;
   busy = true;
   $('#send').disabled = true;
 
@@ -1195,6 +1316,12 @@ async function doSend() {
         trace,
       }),
     );
+    suggestion = suggestFollowUp(r);
+    const box = $('#prompt');
+    if (box && !box.value.trim()) {
+      box.placeholder = suggestion ? suggestion + '   (Tab)' : ASK_DEFAULT;
+    }
+
     body.appendChild(feedbackBar(r.runId));
     chatHistory = r.messages || chatHistory;
     scrollThread();
@@ -1207,10 +1334,20 @@ function scrollThread() {
 }
 
 function feedbackBar(runId) {
-  const bar = st(el('div'), 'display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin:16px 0 0');
-  const said = st(el('span', 'xs'), 'color:var(--ink-3)');
-  const mk = (label, verdict, needsNote) => {
-    const b = el('button', 'btn3 btnsm', label);
+  const bar = st(el('div'), 'display:flex;flex-wrap:wrap;align-items:center;gap:3px;margin:6px 0 0');
+  const said = st(el('span', 'xs'), 'color:var(--ink-3);margin-left:5px');
+  const mk = (label, verdict, needsNote, icon) => {
+    // Icons, at the weight of the rest of the footer. Three filled buttons under every
+    // answer read as the main thing to do next, which they are not — most answers are
+    // simply read and moved on from, and feedback is the exception worth having available
+    // rather than the action being asked for.
+    const b = el('button', 'xs');
+    b.innerHTML = icon;
+    b.title = label;
+    b.setAttribute('aria-label', label);
+    st(b, 'border:0;background:none;color:var(--ink-3);cursor:pointer;padding:3px;line-height:0;display:inline-flex;align-items:center;border-radius:7px');
+    b.onmouseenter = () => { b.style.color = 'var(--ink)'; b.style.background = 'var(--surface)'; };
+    b.onmouseleave = () => { b.style.color = 'var(--ink-3)'; b.style.background = 'none'; };
     b.onclick = async () => {
       let note;
       if (needsNote) { note = prompt('What should it have said? This becomes a high-confidence lesson.'); if (!note) return; }
@@ -1222,9 +1359,9 @@ function feedbackBar(runId) {
     };
     return b;
   };
-  bar.appendChild(mk('Good', 'accepted'));
-  bar.appendChild(mk('Wrong', 'rejected'));
-  bar.appendChild(mk('Correct it…', 'corrected', true));
+  bar.appendChild(mk('Good answer', 'accepted', false, ICONS.up));
+  bar.appendChild(mk('Wrong answer', 'rejected', false, ICONS.down));
+  bar.appendChild(mk('Correct it', 'corrected', true, ICONS.pencil));
   bar.appendChild(said);
   return bar;
 }
@@ -2353,16 +2490,40 @@ async function loadProposals() {
     return;
   }
 
-  const pending = p.proposals.filter((x) => x.status === 'draft');
+  const drafts = p.proposals.filter((x) => x.status === 'draft');
   const decided = p.proposals.filter((x) => x.status !== 'draft');
+
+  // "Waiting on you" has to mean there is something you can do.
+  //
+  // It was every draft, and most drafts are tool *contracts* — a note that some computation
+  // recurred, with no handler behind it. Promoting one records a decision and produces
+  // nothing, so the tab was mostly a list of things with no button that does anything,
+  // under a heading asking for a decision. Splitting on capability rather than status.
+  const canAct = (x) =>
+    Boolean(x.defect) || Boolean(x.patch) || Boolean(x.implementation) || x.kind !== 'tool';
+  const pending = drafts.filter(canAct);
+  const noted = drafts.filter((x) => !canAct(x));
   const host = st(el('div'), 'max-width:900px;display:flex;flex-direction:column;min-height:0');
 
   // Waiting on you is the only tab with anything to do, so it leads and carries the count.
   subTabs(host, 'proposals', [
     {
       id: 'pending',
-      label: 'Waiting on you' + (pending.length ? ' · ' + pending.length : ''),
+      label: 'Ready to apply' + (pending.length ? ' · ' + pending.length : ''),
       render: (body) => paintProposals(body, pending, true),
+    },
+    {
+      id: 'noted',
+      label: 'Noted' + (noted.length ? ' · ' + noted.length : ''),
+      render: (body) => {
+        body.appendChild(
+          st(
+            el('p', 'sm', 'Things that recurred often enough to be worth recording, with nothing to approve: each describes a tool but carries no handler, so promoting one records a decision and produces nothing. build_tool is what writes one that installs.'),
+            'margin:0 0 14px;color:var(--ink-3);text-wrap:pretty;max-width:70ch',
+          ),
+        );
+        paintProposals(body, noted, true);
+      },
     },
     { id: 'decided', label: 'Decided' + (decided.length ? ' · ' + decided.length : ''), render: (body) => paintProposals(body, decided, false) },
   ]);
@@ -2377,7 +2538,7 @@ async function loadProposals() {
 function paintProposals(host, items, actionable) {
   host.innerHTML = '';
   if (!items.length) {
-    host.appendChild(st(el('p', 'sm', actionable ? 'Nothing waiting. Proposals arrive when the same gap turns up more than once.' : 'Nothing decided yet.'), 'color:var(--ink-2)'));
+    host.appendChild(st(el('p', 'sm', actionable ? 'Nothing to apply. Proposals arrive when the same gap turns up more than once.' : 'Nothing decided yet.'), 'color:var(--ink-2)'));
     return;
   }
 
