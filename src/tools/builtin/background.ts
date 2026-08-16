@@ -44,6 +44,27 @@ interface Job {
 const jobs = new Map<string, Job>();
 
 /**
+ * Signal the whole group, falling back to the child alone.
+ *
+ * A negative pid means "the process group" on POSIX. It is the difference between stopping
+ * a command and stopping the first process of one.
+ */
+function signal(job: Job, sig: NodeJS.Signals): void {
+  try {
+    if (job.child.pid) process.kill(-job.child.pid, sig);
+    else job.child.kill(sig);
+  } catch {
+    // The group is already gone, or this platform has no groups. Either way, try the child
+    // directly and accept that a process which has already exited cannot be signalled.
+    try {
+      job.child.kill(sig);
+    } catch {
+      // Nothing left to signal.
+    }
+  }
+}
+
+/**
  * Nothing we started outlives us. A dev server left running after the runtime exits is a
  * port nobody can free and a process nobody remembers starting.
  */
@@ -53,13 +74,7 @@ function bindCleanup(): void {
   cleanupBound = true;
   const killAll = () => {
     for (const job of jobs.values()) {
-      if (job.exitCode === null) {
-        try {
-          job.child.kill('SIGKILL');
-        } catch {
-          // Exiting anyway; a process that has already gone is not a problem.
-        }
-      }
+      if (job.exitCode === null) signal(job, 'SIGKILL');
     }
   };
   process.once('exit', killAll);
@@ -73,6 +88,10 @@ export function startBackgroundCommand(command: string, cwd: string, runId: stri
     shell: true,
     cwd,
     env: { ...process.env, HATS_RUN_ID: runId },
+    // Its own process group, so stopping it stops what it started. Without this we signal
+    // the shell and nothing else: `npm run dev` is npm, which forks node, and killing npm
+    // leaves node holding the port with no handle left to reach it by.
+    detached: true,
   });
 
   const job: Job = {
@@ -200,18 +219,12 @@ export const stopCommand: ToolHandler = {
       };
     }
     job.killed = true;
-    job.child.kill('SIGTERM');
+    signal(job, 'SIGTERM');
     // SIGTERM is a request. Anything that ignores it gets one grace period and then does not
     // get a choice, because a job nobody can stop is a job that outlives the runtime.
     setTimeout(() => {
-      if (job.exitCode === null) {
-        try {
-          job.child.kill('SIGKILL');
-        } catch {
-          // Already gone between the check and the signal.
-        }
-      }
-    }, 3_000).unref();
+      if (job.exitCode === null) signal(job, 'SIGKILL');
+    }, 1_500).unref();
 
     return {
       summary: `stopped ${job.id} (${job.command})`,
@@ -230,12 +243,6 @@ export function unreadBackgroundJobs(): Array<{ id: string; command: string; run
 
 /** Tests need a clean slate; nothing else should call this. */
 export function resetBackgroundJobs(): void {
-  for (const job of jobs.values()) {
-    try {
-      job.child.kill('SIGKILL');
-    } catch {
-      // Nothing to do: the process is already gone.
-    }
-  }
+  for (const job of jobs.values()) signal(job, 'SIGKILL');
   jobs.clear();
 }

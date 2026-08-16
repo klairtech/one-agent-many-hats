@@ -63,12 +63,20 @@ test('a non-zero exit is a failure, but still running is not', async () => {
 
 test('a server that would run forever can be stopped', async () => {
   try {
-    const job = startBackgroundCommand('sleep 30', process.cwd(), 'run_test');
-    await settle(200);
+    // A shell that forks is the case that matters: killing the shell alone leaves the
+    // sleep running, which is exactly what a dev server does to a port.
+    const job = startBackgroundCommand('sleep 30 & wait', process.cwd(), 'run_test');
+    await settle(300);
     await stopCommand.run({ id: job.id }, ctx);
-    await settle(500);
-    const after = await commandOutput.run({ id: job.id }, ctx);
-    assert.equal((after.payload as { running: boolean }).running, false, 'stop_command did not stop it');
+
+    // Polled rather than slept: SIGTERM is a request, the SIGKILL fallback is 1.5s behind
+    // it, and a fixed wait either flakes on a loaded machine or pads every run.
+    let running = true;
+    for (let i = 0; i < 40 && running; i++) {
+      await settle(100);
+      running = ((await commandOutput.run({ id: job.id }, ctx)).payload as { running: boolean }).running;
+    }
+    assert.equal(running, false, 'stop_command did not stop it within 4s');
   } finally {
     resetBackgroundJobs();
   }
