@@ -1,13 +1,15 @@
 ---
 id: outcome/research
 kind: outcome
-version: 9
+version: 10
 description: Answer a question that needs sources from the web, with every claim traced to a URL.
 tools:
   - fetch_url
   - search_files
   - search_documents
   - read_file
+  - read_pdf
+  - read_image
   - list_dir
   - derive_metric
   - sandbox_run

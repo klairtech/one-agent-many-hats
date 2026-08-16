@@ -24,6 +24,7 @@ import { readPlaybook } from './builtin/playbook.js';
 import { searchTools } from './builtin/search.js';
 import { systemTools } from './builtin/system.js';
 import { commandOutput, stopCommand } from './builtin/background.js';
+import { binaryTools } from './builtin/binary.js';
 import { sandboxTools } from './sandbox/sandbox.js';
 import type { ToolHandler } from './types.js';
 
@@ -46,6 +47,7 @@ export const ALL_TOOLS: ToolHandler[] = [
   ...systemTools,
   commandOutput,
   stopCommand,
+  ...binaryTools,
 ];
 
 export function toolRegistry(handlers: ToolHandler[] = ALL_TOOLS): Map<string, ToolHandler> {

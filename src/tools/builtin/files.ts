@@ -134,7 +134,17 @@ export const readFile: ToolHandler = {
 
     const raw = await fsp.readFile(file, 'utf8');
     if (looksBinary(raw)) {
-      throw new HatsError('TOOL_FAILED', `${args['path']} looks binary, not text`, { file });
+      // Naming the tool that can. "Looks binary, not text" was true and useless: the next
+      // step was a second read_file on the same path, or an answer saying the file could not
+      // be examined when in fact it could.
+      const ext = String(args['path']).split('.').pop()?.toLowerCase() ?? '';
+      const instead =
+        ext === 'pdf'
+          ? ' Use read_pdf.'
+          : ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)
+            ? ' Use read_image.'
+            : '';
+      throw new HatsError('TOOL_FAILED', `${args['path']} looks binary, not text.${instead}`, { file });
     }
     const allLines = raw.split('\n');
     const start = Math.max(1, Number(args['start_line'] ?? 1));

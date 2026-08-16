@@ -530,6 +530,7 @@ async function runAgentInner(opts: RunOptions, runId: string, slug: string): Pro
               content: observation.summary,
               toolCallId: call.id,
               name: call.name,
+              ...(observation.images?.length ? { images: observation.images } : {}),
             });
           }
 

@@ -201,6 +201,10 @@ export class Executor {
         summary: `[${artifactId}] ${shaped.summary}`,
         artifactId,
         durationMs: Date.now() - started,
+        // Deliberately not written to the artifact above: an artifact is evidence a person
+        // reads, and a megabyte of base64 in it makes the record unreadable while adding
+        // nothing the file on disk does not already say.
+        ...(result.images?.length ? { images: result.images } : {}),
       };
 
       this.ctx.logger.info('tool.result', {

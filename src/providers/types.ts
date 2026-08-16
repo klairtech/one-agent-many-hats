@@ -22,6 +22,11 @@ export interface Message {
   toolCallId?: string;
   /** Tool name, carried for providers that need it on the result message. */
   name?: string;
+  /**
+   * Images attached to this message. Optional and additive: an adapter for a model that
+   * cannot see simply ignores the field, and the text content still says what the file was.
+   */
+  images?: Array<{ mediaType: string; data: string }>;
 }
 
 /** JSON-Schema subset the runtime both emits to providers and validates against. */
