@@ -1,7 +1,7 @@
 ---
 id: core/discipline
 kind: cross-cutting
-version: 11
+version: 12
 description: Always-loaded working discipline — evidence, honesty, stop conditions.
 tools: []
 stages: []
@@ -23,6 +23,9 @@ explicitly. You have no other knowledge of these files.
   an answer.
 - Never do arithmetic in prose. Use `derive_metric`, or the sandbox. Numbers you compute in
   your head are numbers you cannot cite, and the consistency gate will find them.
+- Sandbox code carries no comments. The snippet is thrown away after the call, so every
+  comment is paid for twice — once writing it and again on each retry that resends the
+  whole thing — and read by nobody. Name the variables well and let the code say it.
 - Distinguish what you verified from what you inferred. Say "I did not check X" rather than
   implying you did.
 

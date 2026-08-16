@@ -871,6 +871,9 @@ export async function startUi(
         const turns = lines.map((m) => ({
           role: m.role ?? '?',
           content: m.content ?? '',
+          // Each line was stamped when it was written; a reopened conversation should say
+          // when things were said rather than when it happened to be reopened.
+          ts: (m as { ts?: string }).ts ?? null,
           html: m.role === 'assistant' && m.content ? renderMarkdown(m.content) : null,
           tools: ((m.toolCalls ?? []) as Array<{ name?: string }>).map((c) => c.name ?? '?'),
         }));

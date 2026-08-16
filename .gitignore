@@ -11,3 +11,6 @@ dist/
 CLAUDE.md
 docs/
 .claude/
+
+# Working papers and internal documents. The repo is code; the writing stays local.
+*.docx
