@@ -6,6 +6,8 @@
  */
 
 import assert from 'node:assert/strict';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
 import { renderPage } from "../src/ui/page.js";
 import test from 'node:test';
 
@@ -278,6 +280,178 @@ test('a secret field never reaches the model', async () => {
     assert.match(answer, /9999/, 'the hint should identify which key it was');
     // And it is actually retrievable where it belongs.
     assert.equal(getCredential('athena_key'), 'AKIAsupersecretvalue9999');
+  } finally {
+    await cleanup(home);
+  }
+});
+
+/**
+ * The Outputs panel claims a run "wrote 2 files". It has to be true.
+ *
+ * The obvious source is the audit trail, and it is wrong: `tool.call` is logged before the
+ * allowlist, the profile check, the gate and the human approval, so every refused write is
+ * in there looking exactly like a successful one. On a mutating tool a refusal is the
+ * ordinary outcome, which makes the wrong source wrong most of the time.
+ */
+test('files written are the writes that happened, not the ones that were asked for', async () => {
+  const home = await tempHome();
+  const runs = path.join(home, 'runs');
+  try {
+    const { collectOutputs } = await import('../src/ui/outputs.js');
+    const run = path.join(runs, '20260816T101500Z-aaaaaa');
+    await fsp.mkdir(path.join(run, 'artifacts'), { recursive: true });
+
+    // One write that returned, one that the human declined. A denial never gets an artifact.
+    await fsp.writeFile(
+      path.join(run, 'artifacts', 'art_ok.json'),
+      JSON.stringify({ id: 'art_ok', tool: 'write_file', payload: { path: 'reports/q3.md', bytes: 12 } }),
+    );
+    await fsp.writeFile(
+      path.join(run, 'run.json'),
+      JSON.stringify({
+        runId: '20260816T101500Z-aaaaaa',
+        request: 'write the report',
+        startedAt: '2026-08-16T10:15:00Z',
+        ok: true,
+        observations: [
+          { tool: 'write_file', artifactId: 'art_ok', ok: true, summary: 'created reports/q3.md' },
+          { tool: 'write_file', ok: false, summary: 'DENIED (APPROVAL_DENIED): the human declined' },
+        ],
+      }),
+    );
+
+    const produced = await collectOutputs(runs);
+    assert.equal(produced.runs.length, 1);
+    assert.deepEqual(
+      produced.runs[0]?.files,
+      ['reports/q3.md'],
+      'a declined write must not be reported as a file on disk',
+    );
+    // The path is the one the file browser can open, not the one the model typed.
+    assert.equal(produced.runs[0]?.artifacts.length, 1);
+  } finally {
+    await cleanup(home);
+  }
+});
+
+test('a run that produced nothing is skipped, and a corrupt record does not take the panel down', async () => {
+  const home = await tempHome();
+  const runs = path.join(home, 'runs');
+  try {
+    const { collectOutputs } = await import('../src/ui/outputs.js');
+
+    const empty = path.join(runs, '20260816T090000Z-bbbbbb');
+    await fsp.mkdir(empty, { recursive: true });
+    await fsp.writeFile(path.join(empty, 'run.json'), JSON.stringify({ request: 'just talk', observations: [] }));
+
+    const broken = path.join(runs, '20260816T095000Z-cccccc');
+    await fsp.mkdir(broken, { recursive: true });
+    await fsp.writeFile(path.join(broken, 'run.json'), '{ not json');
+
+    const good = path.join(runs, '20260816T093000Z-dddddd');
+    await fsp.mkdir(path.join(good, 'artifacts'), { recursive: true });
+    await fsp.writeFile(
+      path.join(good, 'run.json'),
+      JSON.stringify({ request: 'count them', startedAt: '2026-08-16T09:30:00Z', ok: true, observations: [{ tool: 'read_file', artifactId: 'art_1', ok: true, summary: 'read 40 rows' }] }),
+    );
+
+    const produced = await collectOutputs(runs);
+    assert.equal(produced.runs.length, 1, 'only the run that produced something belongs here');
+    assert.equal(produced.runs[0]?.request, 'count them');
+    assert.equal(produced.total, 3, 'the count on disk is what the panel reports, not what it shows');
+  } finally {
+    await cleanup(home);
+  }
+});
+
+/**
+ * The search is over runs, and runs that produced nothing are skipped — so a window over run
+ * *directories* is a window over the wrong thing. A handful of chats is enough to push the
+ * report written last week off the end of it, and the panel then says "nothing produced yet"
+ * about a workspace that plainly did produce something.
+ */
+test('a conversation that produced something is not buried by later ones that did not', async () => {
+  const home = await tempHome();
+  const runs = path.join(home, 'runs');
+  try {
+    const { collectOutputs } = await import('../src/ui/outputs.js');
+
+    const old = path.join(runs, '20260101T000000Z-aaaaaa');
+    await fsp.mkdir(path.join(old, 'artifacts'), { recursive: true });
+    await fsp.writeFile(
+      path.join(old, 'run.json'),
+      JSON.stringify({
+        request: 'the report from January',
+        startedAt: '2026-01-01T00:00:00Z',
+        ok: true,
+        observations: [{ tool: 'read_file', artifactId: 'art_old', ok: true, summary: 'read the source' }],
+      }),
+    );
+
+    // Then a stack of newer conversations that only ever talked.
+    for (let i = 0; i < 12; i++) {
+      const chat = path.join(runs, `20260201T0000${String(i).padStart(2, '0')}Z-bbbbbb`);
+      await fsp.mkdir(chat, { recursive: true });
+      await fsp.writeFile(
+        path.join(chat, 'run.json'),
+        JSON.stringify({ request: `chat ${i}`, startedAt: '2026-02-01T00:00:00Z', ok: true, observations: [] }),
+      );
+    }
+
+    // `want` is well under the number of quiet conversations in front of it.
+    const produced = await collectOutputs(runs, { want: 3, scan: 250 });
+    assert.equal(produced.runs.length, 1, 'the January report is still findable behind 12 quiet chats');
+    assert.equal(produced.runs[0]?.request, 'the report from January');
+
+    // And when the search itself runs out, the panel is told so rather than left to imply
+    // that what it is showing is everything.
+    const capped = await collectOutputs(runs, { want: 3, scan: 5 });
+    assert.equal(capped.runs.length, 0, 'a scan that stops short finds nothing here');
+    assert.equal(capped.scanned, 5);
+    assert.equal(capped.total, 13);
+    assert.equal(capped.more, true, 'stopping short must be reported, not passed off as an empty history');
+  } finally {
+    await cleanup(home);
+  }
+});
+
+/**
+ * The panel shows a page of runs, but the runs that count are the ones that produced
+ * something — and those are a subset. If the scan is capped at the size of the page, a few
+ * recent conversations that produced nothing push every real output off the end, and the
+ * panel says "nothing produced yet" over a disk full of outputs.
+ *
+ * So the scan and the page are two different numbers, and this is the test that says so.
+ */
+test('conversations that produced nothing do not push real outputs off the page', async () => {
+  const home = await tempHome();
+  const runs = path.join(home, 'runs');
+  try {
+    const { collectOutputs } = await import('../src/ui/outputs.js');
+
+    // Three recent conversations that produced nothing, sitting on top of two that did.
+    const write = async (id: string, observations: unknown[]) => {
+      const dir = path.join(runs, id);
+      await fsp.mkdir(path.join(dir, 'artifacts'), { recursive: true });
+      await fsp.writeFile(
+        path.join(dir, 'run.json'),
+        JSON.stringify({ request: id, startedAt: '2026-08-16T00:00:00Z', ok: true, observations }),
+      );
+    };
+    const produced = [{ tool: 'read_file', artifactId: 'art_1', ok: true, summary: 'read it' }];
+    await write('20260816T090000Z-aaaaaa', produced);
+    await write('20260816T090100Z-bbbbbb', produced);
+    await write('20260816T090200Z-cccccc', []);
+    await write('20260816T090300Z-dddddd', []);
+    await write('20260816T090400Z-eeeeee', []);
+
+    const page = await collectOutputs(runs, { want: 2, scan: 10 });
+    assert.equal(
+      page.runs.length,
+      2,
+      'the scan stopped at the page size, so runs that produced nothing hid the ones that did',
+    );
+    assert.ok(page.scanned > 2, 'more run directories have to be read than are displayed');
   } finally {
     await cleanup(home);
   }

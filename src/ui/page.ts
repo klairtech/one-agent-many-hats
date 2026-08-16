@@ -157,7 +157,15 @@ table.grid td{padding:9px 0;border-top:1px solid var(--line)}
   .paper{padding:24px 20px}
 }
 @media (max-width:640px){
-  .filesplit-list{width:100%!important}
+  /* Two columns do not fit side by side here. Widening the list alone left the preview
+     rendered 0px wide, so on a phone the browser was a list of files that did nothing when
+     you tapped one. Stack them instead. !important because the split sets its own inline
+     layout. [Measured at 375px, 2026-08-16.] */
+  .filesplit{flex-direction:column!important;overflow-y:auto!important}
+  .filesplit-list{width:100%!important;flex:none;max-height:40vh;border-right:0!important;border-bottom:1px solid var(--line)}
+  /* !important: the split sets min-height:0 inline on this column so it can shrink beside
+     the list. Stacked, that collapses it to the height of one paragraph. */
+  #preview-col{min-height:55vh!important}
 }
 </style>
 </head>
@@ -200,15 +208,19 @@ table.grid td{padding:9px 0;border-top:1px solid var(--line)}
       <div id="view" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;padding:20px 24px 44px"></div>
     </main>
   </div>
-</div>
 
-<div id="overlay" hidden style="position:fixed;inset:0;background:var(--scrim);z-index:60;overflow:auto;padding:26px;animation:fade .15s ease both">
-  <div style="max-width:1100px;margin:0 auto;background:var(--canvas);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow-lg);padding:18px;animation:pop .2s ease both">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-      <span class="h3" id="overlay-title" style="flex:1;min-width:0"></span>
-      <button class="btn2 btnsm" id="overlay-close">Close</button>
+  <!-- Inside #root, for the same reason modal() appends itself there: every colour token is
+       defined on [data-theme], which is #root. Outside it, var(--scrim) and var(--canvas)
+       resolve to nothing, and the full-view overlay opened as unreadable text painted
+       straight over the page behind it. [Seen in the panel, 2026-08-16.] -->
+  <div id="overlay" hidden style="position:fixed;inset:0;background:var(--scrim);z-index:60;overflow:auto;padding:26px;animation:fade .15s ease both">
+    <div style="max-width:1100px;margin:0 auto;background:var(--canvas);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow-lg);padding:18px;animation:pop .2s ease both">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <span class="h3" id="overlay-title" style="flex:1;min-width:0"></span>
+        <button class="btn2 btnsm" id="overlay-close">Close</button>
+      </div>
+      <div id="overlay-body"></div>
     </div>
-    <div id="overlay-body"></div>
   </div>
 </div>
 
@@ -360,14 +372,29 @@ const subTabState = {};
 function subTabs(host, viewId, tabs) {
   const bar = st(el('div'), 'display:flex;gap:3px;background:var(--surface);border-radius:999px;padding:3px;align-self:flex-start;max-width:100%;overflow-x:auto;flex:none');
   bar.setAttribute('role', 'tablist');
-  const body = st(el('div'), 'margin-top:20px;flex:1;min-height:0;display:flex;flex-direction:column');
+  const BODY_STYLE = 'margin-top:20px;flex:1;min-height:0;display:flex;flex-direction:column';
+  const body = st(el('div'), BODY_STYLE);
   host.appendChild(bar);
   host.appendChild(body);
 
   const activate = (id) => {
     subTabState[viewId] = id;
-    [...bar.children].forEach((b) => b.setAttribute('data-on', b.dataset.tabid === id ? '1' : '0'));
+    [...bar.children].forEach((b) => {
+      const on = b.dataset.tabid === id;
+      b.setAttribute('data-on', on ? '1' : '0');
+      // Which tab is current is carried by colour alone otherwise, which says nothing to a
+      // screen reader and nothing to anyone who cannot see the difference.
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
     body.innerHTML = '';
+    // The style goes back too, not just the contents. A tab that lays out its own container
+    // — the file browser sets the body to a bordered two-column flex row — otherwise leaves
+    // that behind for whichever tab is opened next, which then renders its cards sideways
+    // inside a stray box. Emptying a container it does not own is half the job.
+    body.setAttribute('style', BODY_STYLE);
+    // Classes are part of that container too — the file browser marks the body .filesplit so
+    // the small breakpoint can stack its columns, and that must not follow it to the next tab.
+    body.className = '';
     const tab = tabs.find((t) => t.id === id) || tabs[0];
     tab.render(body);
   };
@@ -1143,6 +1170,7 @@ async function loadFiles(dirPath, host) {
   // into whatever it is given and keeps its own two-column layout there.
   const v = host || FILES_HOST || $('#view');
   FILES_HOST = v;
+  v.classList.add('filesplit');
   v.setAttribute('style', 'flex:1;min-height:0;display:flex;overflow:hidden;padding:0;border:1px solid var(--line);border-radius:14px');
   v.innerHTML = '';
   const listCol = st(el('div', 'filesplit-list'), 'width:300px;flex:none;display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--line)');
@@ -1934,63 +1962,121 @@ async function telegramCard() {
  * The browser survives as a second tab, because pointing a run at a file is a real job.
  */
 let FILES_HOST = null;
+let OUTPUT_TABS = null;
+/** Where the browser tab should open next time it paints. Consumed once, then back to root. */
+let FILES_START = '.';
 
 /** The workspace browser, as a tab. */
 function paintFileBrowser(host) {
   FILES_HOST = host;
-  loadFiles('.', host);
+  const start = FILES_START;
+  FILES_START = '.';
+  loadFiles(start, host);
 }
 
-/** Open one file in the browser tab, from a link elsewhere. */
-async function openFile(relPath) {
-  const tab = [...document.querySelectorAll('[data-tabid]')].find((b) => b.dataset.tabid === 'files');
-  if (tab) tab.click();
-  await new Promise((r) => setTimeout(r, 120));
-  showPreview(relPath);
+/**
+ * Open one file in the browser tab, from a link elsewhere.
+ *
+ * Switching tab by finding the button and clicking it, then sleeping long enough for the
+ * repaint, is a guess about someone else's timing. subTabs hands back the switch, and the
+ * browser builds its two columns before it awaits anything, so the preview pane is there by
+ * the time activate returns. No timers.
+ */
+function openFile(relPath) {
+  const slash = relPath.lastIndexOf('/');
+  FILES_START = slash > 0 ? relPath.slice(0, slash) : '.';
+  if (OUTPUT_TABS) OUTPUT_TABS.activate('files');
+  return showPreview(relPath);
 }
 
-async function loadOutputs() {
+function loadOutputs() {
   const v = $('#view');
   v.innerHTML = '';
   const host = st(el('div'), 'max-width:1000px;flex:1;min-height:0;display:flex;flex-direction:column');
-  subTabs(host, 'outputs', [
+  OUTPUT_TABS = subTabs(host, 'outputs', [
     { id: 'produced', label: 'Produced', render: (body) => paintProduced(body) },
     { id: 'files', label: 'Workspace files', render: (body) => paintFileBrowser(body) },
   ]);
   v.appendChild(host);
 }
 
+const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
+
 async function paintProduced(host) {
   host.innerHTML = '<p class="sm" style="color:var(--ink-2)">Loading…</p>';
-  const d = await api('/api/outputs');
+  let d;
+  try {
+    d = await api('/api/outputs');
+  } catch (e) {
+    // A view that fails silently reads as a view with nothing in it, which is a different
+    // and much worse claim than "this did not load".
+    host.innerHTML = '';
+    const box = st(el('div'), 'display:flex;flex-direction:column;align-items:flex-start;gap:10px');
+    box.appendChild(st(el('p', 'sm', 'Could not read what was produced: ' + e.message), 'margin:0;color:var(--dang);text-wrap:pretty'));
+    const again = el('button', 'btn2 btnsm', 'Try again');
+    again.onclick = () => paintProduced(host);
+    box.appendChild(again);
+    host.appendChild(box);
+    return;
+  }
+
   host.innerHTML = '';
-  if (!d.runs.length) {
-    host.appendChild(st(el('p', 'sm', 'Nothing produced yet. Artifacts appear as soon as a run reads or computes anything — they are what its citations point at.'), 'color:var(--ink-2);text-wrap:pretty'));
+  const runs = d.runs || [];
+  if (!runs.length) {
+    // "Nothing yet" and "nothing recently" are different facts, and only one of them is
+    // reassuring.
+    const text = (d.total || 0) === 0
+      ? 'Nothing produced yet. Artifacts appear as soon as a run reads or computes anything — they are what its citations point at.'
+      : plural(d.scanned || 0, 'conversation', 'conversations') + ' searched, none of which wrote a file or recorded an artifact.';
+    host.appendChild(st(el('p', 'sm', text), 'color:var(--ink-2);text-wrap:pretty'));
     return;
   }
 
   const wrap = st(el('div'), 'display:flex;flex-direction:column;gap:10px');
-  d.runs.forEach((r) => {
+  runs.forEach((r, i) => {
     const card = st(el('section'), 'background:var(--surface);border-radius:14px;overflow:hidden');
 
-    const head = st(el('button'), 'display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:0;background:none;color:inherit;font-family:inherit;padding:13px 16px;cursor:pointer');
+    const body = st(el('div'), 'display:none;padding:0 16px 14px');
+    body.id = 'produced-' + i;
+
+    // flex-wrap, because at 375px the request, the counts and the time do not fit on one
+    // line and the request is the part that gets squeezed to nothing.
+    const head = st(el('button'), 'display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;width:100%;text-align:left;border:0;background:none;color:inherit;font-family:inherit;padding:13px 16px;cursor:pointer;min-height:44px');
+    head.setAttribute('aria-expanded', 'false');
+    head.setAttribute('aria-controls', body.id);
+
+    // inline-block, or the rotation is silently dropped: transform does not apply to an
+    // inline non-replaced element, so the only signal that the row expands never moves.
+    const chevron = st(el('span', 'xs', '▸'), 'display:inline-block;color:var(--ink-3);flex:none;transition:transform .12s ease');
+    head.appendChild(chevron);
     head.appendChild(statusPill(r.ok ? 'ok' : 'incomplete', r.ok ? 'ok' : 'warn'));
-    head.appendChild(st(el('span', 'sm', r.request || '(no request)'), 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'));
-    if (r.files.length) head.appendChild(st(el('span', 'xs', r.files.length + (r.files.length === 1 ? ' file' : ' files')), 'color:var(--ok);font-weight:600;flex:none'));
-    head.appendChild(st(el('span', 'xs num', r.artifacts.length + ' artifacts'), 'color:var(--ink-3);flex:none'));
-    head.appendChild(st(el('span', 'xs num', relativeTime(r.at)), 'color:var(--ink-3);flex:none'));
+    head.appendChild(st(el('span', 'sm', r.request || '(no request)'), 'flex:1;min-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'));
+    if (r.files.length) head.appendChild(st(el('span', 'xs', plural(r.files.length, 'file', 'files')), 'color:var(--ok);font-weight:600;flex:none'));
+    head.appendChild(st(el('span', 'xs num', plural(r.artifacts.length, 'artifact', 'artifacts')), 'color:var(--ink-3);flex:none'));
+    const when = st(el('span', 'xs num', relativeTime(r.at)), 'color:var(--ink-3);flex:none');
+    if (r.at) when.title = new Date(r.at).toLocaleString();
+    head.appendChild(when);
     card.appendChild(head);
 
-    const body = st(el('div'), 'display:none;padding:0 16px 14px');
     head.onclick = () => {
       const open = body.style.display === 'block';
       body.style.display = open ? 'none' : 'block';
+      head.setAttribute('aria-expanded', open ? 'false' : 'true');
+      chevron.style.transform = open ? 'none' : 'rotate(90deg)';
       if (!open && !body.dataset.built) buildOutputDetail(body, r);
     };
     card.appendChild(body);
     wrap.appendChild(card);
   });
   host.appendChild(wrap);
+
+  // A capped list that does not say it is capped reads as the whole history.
+  if (d.more) {
+    host.appendChild(st(
+      el('p', 'xs', 'Showing ' + runs.length + ' of ' + plural(d.total || runs.length, 'conversation', 'conversations') + ' on disk, newest first. The rest are still in the run directory.'),
+      'margin:14px 0 0;color:var(--ink-3);text-wrap:pretty',
+    ));
+  }
 }
 
 function buildOutputDetail(host, r) {
@@ -1999,32 +2085,83 @@ function buildOutputDetail(host, r) {
   // Files first: they are the part that outlives the run.
   if (r.files.length) {
     host.appendChild(st(el('p', 'xs', 'files written'), 'margin:8px 0 0;color:var(--ink-3);font-weight:600'));
-    const list = st(el('div'), 'display:flex;flex-direction:column;gap:4px;margin-top:5px');
+    const list = st(el('div'), 'display:flex;flex-direction:column;gap:2px;margin-top:5px;align-items:flex-start');
     r.files.forEach((f) => {
-      const b = st(el('button', 'xs mono'), 'text-align:left;border:0;background:none;color:var(--brand-strong);font-family:ui-monospace,monospace;cursor:pointer;padding:2px 0');
+      const b = st(el('button', 'xs mono'), 'text-align:left;border:0;background:none;color:var(--brand-strong);font-family:ui-monospace,monospace;cursor:pointer;padding:6px 0;min-height:32px');
       b.textContent = f;
-      b.onclick = () => { go('outputs'); setTimeout(() => openFile(f), 60); };
+      b.onclick = () => openFile(f);
       list.appendChild(b);
     });
     host.appendChild(list);
   }
 
   host.appendChild(st(el('p', 'xs', 'artifacts — what its citations point at'), 'margin:12px 0 0;color:var(--ink-3);font-weight:600'));
-  const list = st(el('div'), 'display:flex;flex-direction:column;gap:1px;margin-top:6px;background:var(--line);border-radius:10px;overflow:hidden');
-  r.artifacts.forEach((a) => {
-    const row = st(el('button'), 'display:flex;gap:9px;align-items:baseline;width:100%;text-align:left;border:0;background:var(--canvas);color:inherit;font-family:inherit;padding:8px 11px;cursor:pointer');
-    row.appendChild(st(el('span', 'xs mono', a.id), 'color:var(--brand-strong);flex:none'));
-    row.appendChild(st(el('span', 'xs', a.tool), 'color:var(--ink-3);flex:none'));
-    row.appendChild(st(el('span', 'xs', a.summary), 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2)'));
-    row.onclick = async () => {
-      try {
-        const d = await api('/api/artifact?runId=' + encodeURIComponent(r.runId) + '&id=' + encodeURIComponent(a.id));
-        await say(a.id, JSON.stringify(d.artifact.payload, null, 2).slice(0, 6000));
-      } catch (e) { await say('Could not open it', e.message); }
-    };
-    list.appendChild(row);
-  });
-  host.appendChild(list);
+  if (!r.artifacts.length) {
+    host.appendChild(st(el('p', 'xs', 'None. This conversation wrote a file without recording evidence for it.'), 'margin:5px 0 0;color:var(--ink-2)'));
+  } else {
+    const list = st(el('div'), 'display:flex;flex-direction:column;gap:1px;margin-top:6px;background:var(--line);border-radius:10px;overflow:hidden');
+    r.artifacts.forEach((a) => {
+      const row = st(el('button'), 'display:flex;flex-wrap:wrap;gap:4px 9px;align-items:baseline;width:100%;text-align:left;border:0;background:var(--canvas);color:inherit;font-family:inherit;padding:9px 11px;cursor:pointer;min-height:36px');
+      row.appendChild(st(el('span', 'xs mono', a.id), 'color:var(--brand-strong);flex:none'));
+      row.appendChild(st(el('span', 'xs', a.tool), 'color:var(--ink-3);flex:none'));
+      row.appendChild(st(el('span', 'xs', a.summary), 'flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2)'));
+      row.onclick = () => showArtifact(r.runId, a);
+      list.appendChild(row);
+    });
+    host.appendChild(list);
+  }
+
+  // The run that produced this is the context for all of it, and it was two views away.
+  const back = el('button', 'btn3 btnsm', 'Open this conversation');
+  back.onclick = () => openConversation({ runId: r.runId, startedAt: r.at });
+  const foot = st(el('div'), 'margin-top:12px');
+  foot.appendChild(back);
+  host.appendChild(foot);
+}
+
+/**
+ * One artifact, in full: what the model was shown, where the value came from, and the whole
+ * stored payload. Provenance is the reason artifacts exist — a number in an answer is either
+ * in one of these or it was invented — so a viewer that showed only the payload was hiding
+ * the half that settles the question.
+ */
+async function showArtifact(runId, a) {
+  let d;
+  try {
+    d = await api('/api/artifact?runId=' + encodeURIComponent(runId) + '&id=' + encodeURIComponent(a.id));
+  } catch (e) {
+    await say('Could not open that artifact', e.message);
+    return;
+  }
+
+  const box = $('#overlay-body');
+  box.innerHTML = '';
+  const meta = [d.tool, d.kind, d.createdAt ? relativeTime(d.createdAt) : ''].filter(Boolean).join(' · ');
+  box.appendChild(st(el('p', 'xs', meta), 'margin:0 0 10px;color:var(--ink-3)'));
+
+  const block = (label, text) => {
+    box.appendChild(st(el('p', 'xs', label), 'margin:14px 0 5px;color:var(--ink-3);font-weight:600'));
+    const pre = st(el('pre', 'mono xs'), 'margin:0;background:var(--surface);border-radius:10px;padding:12px 14px;overflow:auto;max-height:40vh;line-height:1.55;white-space:pre-wrap;word-break:break-word');
+    pre.textContent = text;
+    box.appendChild(pre);
+  };
+
+  if (d.summary) block('what the model saw', d.summary);
+  block('provenance — inputs, formula, source', JSON.stringify(d.provenance || {}, null, 2));
+  // The label has to match what is underneath it. Calling a cut payload "the whole stored
+  // result" is a small lie in the one place built for checking whether a number is real.
+  block(d.truncated ? 'payload — the start of the stored result' : 'payload — the whole stored result', d.payload);
+  if (d.truncated) {
+    box.appendChild(st(
+      el('p', 'xs', 'Showing the first ' + num(d.payload.length) + ' of ' + num(d.payloadChars) + ' characters. The whole artifact is at ' + d.file + '.'),
+      'margin:9px 0 0;color:var(--ink-3);text-wrap:pretty',
+    ));
+  }
+
+  $('#overlay-title').textContent = d.id;
+  $('#overlay').hidden = false;
+  const close = $('#overlay-close');
+  if (close) close.focus();
 }
 
 async function loadProposals() {
