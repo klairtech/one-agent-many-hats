@@ -392,10 +392,21 @@ window.addEventListener('popstate', () => {
  */
 const subTabState = {};
 
+/** Can a person do anything with this proposal beyond reading or rejecting it? */
+function actionable(x) {
+  return Boolean(x.defect) || Boolean(x.patch) || Boolean(x.implementation) || x.kind !== 'tool';
+}
+
 function subTabs(host, viewId, tabs) {
   const bar = st(el('div'), 'display:flex;gap:3px;background:var(--surface);border-radius:999px;padding:3px;align-self:flex-start;max-width:100%;overflow-x:auto;flex:none');
   bar.setAttribute('role', 'tablist');
-  const BODY_STYLE = 'margin-top:20px;flex:1;min-height:0;display:flex;flex-direction:column';
+  // Only the file browser wants a body that fills its parent and manages its own scroll.
+  // Applying that everywhere pinned every tabbed view to the viewport height, so Proposals
+  // stopped scrolling and simply cut off at the fold with six rows and no way to reach them.
+  const BODY_STYLE =
+    viewId === 'outputs'
+      ? 'margin-top:20px;flex:1;min-height:0;display:flex;flex-direction:column'
+      : 'margin-top:20px';
   const body = st(el('div'), BODY_STYLE);
   host.appendChild(bar);
   host.appendChild(body);
@@ -553,7 +564,13 @@ async function loadState() {
   $('#side-bind').appendChild(st(el('span', null, '\\u{1F512}'), 'flex:none;color:var(--ok)'));
   $('#side-bind').appendChild(el('span', 'mono', location.host));
 
-  try { const p2 = await api('/api/proposals'); badges.proposals = p2.proposals.filter((x) => x.status === 'draft').length || 0; } catch (e) {}
+  try {
+    // The same test the Ready tab uses. Counting every draft put 6 on the badge and 3 on the
+    // page, and the three it was counting were ones with nothing to do — a number that sends
+    // you to a screen that disagrees with it is worse than no number.
+    const p2 = await api('/api/proposals');
+    badges.proposals = p2.proposals.filter((x) => x.status === 'draft' && actionable(x)).length || 0;
+  } catch (e) {}
   renderNav();
 }
 
@@ -1050,13 +1067,15 @@ async function closeSandboxCard(handle, data, runId) {
   handle.state.textContent = '';
   handle.state.appendChild(statusPill(ok ? 'returned' : 'rejected', ok ? 'ok' : 'idle'));
 
-  // A rejected attempt is the agent correcting itself, and it usually takes two or three
-  // goes. Shown at full size they dominate the answer they were working towards — three
-  // screens of nearly identical code, the last one of which is the only one that ran. It
-  // folds to its header, openable, and stops competing with the result.
+  // A rejected attempt leaves the conversation entirely.
+  //
+  // It is the agent correcting itself, it usually takes two or three goes, and every one of
+  // them is a near-copy of the next. Folded they were still four headers between a question
+  // and its answer. The attempt is not lost — it is in the trace, in the run record and in
+  // the audit log, which is where the machinery belongs. The chat keeps the code that ran.
   if (!ok) {
-    handle.card.style.opacity = '.62';
-    if (handle.fold) handle.fold();
+    handle.card.remove();
+    return;
   }
 
   // The whole result, not the bounded one.
@@ -2499,10 +2518,8 @@ async function loadProposals() {
   // recurred, with no handler behind it. Promoting one records a decision and produces
   // nothing, so the tab was mostly a list of things with no button that does anything,
   // under a heading asking for a decision. Splitting on capability rather than status.
-  const canAct = (x) =>
-    Boolean(x.defect) || Boolean(x.patch) || Boolean(x.implementation) || x.kind !== 'tool';
-  const pending = drafts.filter(canAct);
-  const noted = drafts.filter((x) => !canAct(x));
+  const pending = drafts.filter(actionable);
+  const noted = drafts.filter((x) => !actionable(x));
   const host = st(el('div'), 'max-width:900px;display:flex;flex-direction:column;min-height:0');
 
   // Waiting on you is the only tab with anything to do, so it leads and carries the count.
@@ -2550,7 +2567,22 @@ function paintProposals(host, items, actionable) {
     head.appendChild(statusPill(x.kind, x.kind === 'tool' ? 'warn' : 'idle'));
     head.appendChild(st(el('span', 'sm', x.title), 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'));
     if (x.occurrences > 1) head.appendChild(st(el('span', 'xs num', x.occurrences + '×'), 'color:var(--ink-3);flex:none'));
-    if (actionable && x.blockedBecause) head.appendChild(statusPill('needs you', 'warn'));
+    // The primary action sits on the row.
+    //
+    // "needs you" with a chevron and nothing else reads as a status, so the buttons — which
+    // only existed once the row was expanded — may as well not have been there. Naming the
+    // action on the row says what is possible without opening anything.
+    if (actionable) {
+      const verb = x.defect ? 'Repair' : x.patch ? 'Apply' : x.implementation ? 'Install' : 'Promote';
+      const go = el('button', 'btn1 btnsm', verb);
+      st(go, 'flex:none;padding:4px 12px;min-height:28px;font-size:12px');
+      go.onclick = async (e) => {
+        e.stopPropagation();
+        go.disabled = true;
+        await applyProposal(x, go);
+      };
+      head.appendChild(go);
+    }
     if (!actionable) head.appendChild(statusPill(x.status, x.status === 'promoted' ? 'ok' : 'dang'));
     const chev = st(el('span', 'xs'), 'color:var(--ink-3);flex:none');
     chev.textContent = '›';
@@ -2568,6 +2600,37 @@ function paintProposals(host, items, actionable) {
     list.appendChild(row);
   });
   host.appendChild(list);
+}
+
+/**
+ * One implementation behind the row button and the expanded detail, so the two cannot drift
+ * apart. A defect is the only kind whose primary action is not promotion — there is nothing
+ * to write until a run has produced a patch.
+ */
+async function applyProposal(x, btn) {
+  if (x.defect) return repairProposal(x, btn);
+  return promoteProposal(x, btn);
+}
+
+async function promoteProposal(x, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await post('/api/proposal', { id: x.id, action: 'promote' });
+    await say(r.written ? 'Promoted' : 'Not promoted', r.manual || ('written to ' + r.written));
+  } catch (e) { await say('Refused', e.message); }
+  loadProposals(); loadState();
+}
+
+async function repairProposal(x, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    await post('/api/proposal', { id: x.id, action: 'repair' });
+    await say('Repairing ' + x.defect.tool, 'A run is reading the handler now. Watch it in Chat — the patch applies only if the build and the whole test suite pass.');
+    go('run');
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    await say('Could not start the repair', e.message);
+  }
 }
 
 function buildProposalDetail(host, x, actionable) {
@@ -2606,25 +2669,11 @@ function buildProposalDetail(host, x, actionable) {
   if (!actionable) return;
   const row = st(el('div'), 'display:flex;flex-wrap:wrap;gap:8px;margin-top:14px');
   const prom = el('button', 'btn1 btnsm', 'Promote');
-  prom.onclick = async () => {
-    prom.disabled = true;
-    try {
-      const r = await post('/api/proposal', { id: x.id, action: 'promote' });
-      await say(r.written ? 'Promoted' : 'Not promoted', r.manual || ('written to ' + r.written));
-    } catch (e) { await say('Refused', e.message); }
-    loadProposals(); loadState();
-  };
+  prom.onclick = () => promoteProposal(x, prom);
   if (x.defect) {
     const fix = el('button', 'btn1 btnsm', 'Attempt a repair');
     fix.title = 'Start a run that reads the handler and proposes a patch';
-    fix.onclick = async () => {
-      fix.disabled = true;
-      try {
-        await post('/api/proposal', { id: x.id, action: 'repair' });
-        await say('Repairing ' + x.defect.tool, 'A run is reading the handler now. Watch it in Chat — the patch applies only if the build and the whole test suite pass.');
-        go('run');
-      } catch (e) { fix.disabled = false; await say('Could not start the repair', e.message); }
-    };
+    fix.onclick = () => repairProposal(x, fix);
     row.appendChild(fix);
   }
 
