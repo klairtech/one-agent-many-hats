@@ -681,12 +681,25 @@ async function executeCall(
   allowlist: Set<string>,
   emit: (e: RunEvent) => void,
 ): Promise<ToolObservation> {
-  emit({ type: 'tool', message: `${call.name}(${summariseArgs(call.args)})`, data: { tool: call.name } });
+  // Sandbox code is carried on the event so the panel can show what actually ran.
+  // Everything else about a sandbox call — the descriptor, the artifacts it was handed —
+  // is already legible in the summary; the code was the one part that existed only inside
+  // the run record, and it is the part someone reading the answer most wants to check.
+  const code = call.name === 'sandbox_run' ? String((call.args as Record<string, unknown>)['code'] ?? '') : '';
+  emit({
+    type: 'tool',
+    message: `${call.name}(${summariseArgs(call.args)})`,
+    data: { tool: call.name, ...(code ? { code } : {}) },
+  });
   const observation = await executor.execute(call, { allowlist });
   emit({
     type: 'tool',
     message: `  -> ${observation.ok ? 'ok' : 'denied'} ${firstLine(observation.summary)}`,
-    data: { tool: call.name, ok: observation.ok },
+    data: {
+      tool: call.name,
+      ok: observation.ok,
+      ...(code ? { output: observation.summary, artifactId: observation.artifactId } : {}),
+    },
   });
   return observation;
 }

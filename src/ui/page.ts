@@ -156,12 +156,6 @@ table.grid td{padding:9px 0;border-top:1px solid var(--line)}
 <body>
 <div id="root" data-theme="light" style="height:100vh;display:flex;flex-direction:column;background:var(--canvas);color:var(--ink);font-size:14px;overflow:hidden">
 
-  <div style="flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:9px;padding:8px 14px;background:var(--surface-2);border-bottom:1px solid var(--line)">
-    <div role="radiogroup" aria-label="Execution profile" id="profile-group" style="display:flex;gap:3px;background:var(--canvas);border-radius:999px;padding:3px"></div>
-    <span class="xs" id="profile-note" style="margin-left:auto;color:var(--ink-3)"></span>
-    <button class="gh" id="theme-toggle" style="border:1px solid var(--line);background:var(--canvas);color:var(--ink-2);font-family:inherit;font-size:12.5px;font-weight:600;padding:8px 14px;border-radius:999px;cursor:pointer;min-height:36px">Dark</button>
-  </div>
-
   <div style="flex:1;min-height:0;display:flex;overflow:hidden">
 
     <aside aria-label="Main" style="width:236px;flex:none;display:flex;flex-direction:column;background:var(--surface);padding:16px 12px 12px;overflow-y:auto">
@@ -192,6 +186,7 @@ table.grid td{padding:9px 0;border-top:1px solid var(--line)}
           <p class="sm" id="view-blurb" style="margin:5px 0 0;color:var(--ink-2);max-width:70ch;text-wrap:pretty"></p>
         </div>
         <div id="view-icons" style="flex:none;display:flex;gap:6px;align-items:center"></div>
+        <div id="shell-icons" style="flex:none;display:flex;gap:6px;align-items:center"></div>
         <button class="btn1" id="view-action" style="flex:none" hidden></button>
       </header>
       <div id="view" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;padding:20px 24px 44px"></div>
@@ -227,10 +222,11 @@ const num = (n) => (n || 0).toLocaleString();
 // --- theme ------------------------------------------------------------------------
 function applyTheme(t) {
   $('#root').setAttribute('data-theme', t);
-  $('#theme-toggle').textContent = t === 'dark' ? 'Light' : 'Dark';
   try { localStorage.setItem('hats-theme', t); } catch (e) {}
 }
-$('#theme-toggle').onclick = () => applyTheme($('#root').getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+function toggleTheme() {
+  applyTheme($('#root').getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+}
 // Light is the default, deliberately — not the OS preference. A first run should look the
 // same on every machine, and the toggle is one click away and remembered after that.
 (function () {
@@ -241,6 +237,10 @@ $('#theme-toggle').onclick = () => applyTheme($('#root').getAttribute('data-them
 
 // --- views ------------------------------------------------------------------------
 const ICONS = {
+  filter: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M7 12h10"/><path d="M10 18h4"/></svg>',
+  clip: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.1 12.3 20.2a5.5 5.5 0 0 1-7.8-7.8l9.2-9.1a3.7 3.7 0 0 1 5.2 5.2l-9.2 9.1a1.8 1.8 0 0 1-2.6-2.6l8.5-8.4"/></svg>',
+  moon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8"/></svg>',
+  sun: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
   compose: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>',
   run: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
   outputs: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
@@ -391,6 +391,68 @@ function subTabs(host, viewId, tabs) {
  * New and Past used to sit in the composer row, where they crowded the input and read as
  * though they did something to the message you were about to send.
  */
+/**
+ * The profile and the theme, in the header rather than in a bar of their own.
+ *
+ * The profile decides what the agent may do, so it has to be reachable and legible from
+ * anywhere — but a permanent strip across the top spent a whole row on three words that
+ * change once a session. It is a control, not a status line. The current profile stays
+ * visible as the icon's label so nobody has to open the menu to know where they stand.
+ */
+function paintShellIcons() {
+  const host = $('#shell-icons');
+  if (!host) return;
+  host.innerHTML = '';
+
+  const current = PROFILES.find((x) => x[0] === STATE.profile) || PROFILES[0];
+  const prof = el('button', 'btn3 btnsm');
+  prof.innerHTML = ICONS.filter;
+  prof.appendChild(st(el('span', 'xs', current[1]), 'margin-left:7px;font-weight:600'));
+  prof.title = current[2];
+  prof.setAttribute('aria-label', 'Execution profile: ' + current[1]);
+  st(prof, 'display:inline-flex;align-items:center;padding:7px 11px;line-height:0');
+  prof.onclick = pickProfile;
+  host.appendChild(prof);
+
+  if (STATE.network) {
+    const net = st(el('span', 'xs', 'egress ON'), 'color:var(--warn);font-weight:600;align-self:center');
+    net.title = 'Tools may reach the network. Turn it off in Setup.';
+    host.appendChild(net);
+  }
+
+  const dark = document.querySelector('#root').getAttribute('data-theme') === 'dark';
+  const theme = el('button', 'btn3 btnsm');
+  theme.innerHTML = dark ? ICONS.sun : ICONS.moon;
+  theme.title = dark ? 'Light' : 'Dark';
+  theme.setAttribute('aria-label', theme.title);
+  st(theme, 'display:inline-flex;align-items:center;justify-content:center;padding:7px;line-height:0');
+  theme.onclick = () => { toggleTheme(); paintShellIcons(); };
+  host.appendChild(theme);
+}
+
+/**
+ * Choosing a profile. Each option carries its worst case, because that is the only thing
+ * that actually differs between them and the names alone do not say it.
+ */
+async function pickProfile() {
+  const chosen = await modal({
+    title: 'What is the agent allowed to do?',
+    body: 'This is enforced by the executor, not by the prompt. No skill, lesson or file it reads can change it.',
+    buttons: PROFILES.map(([id, label, note]) => ({
+      label: (STATE.profile === id ? '\u2713 ' : '') + label + ' — ' + note,
+      value: id,
+      kind: STATE.profile === id ? 'btn1' : 'btn3',
+    })).concat([{ label: 'Cancel', value: null, kind: 'btn3' }]),
+    cancelValue: null,
+  });
+  if (!chosen || chosen === STATE.profile) return;
+  await post('/api/config', { profile: chosen });
+  await loadState();
+  // The chat screen states the worst case in words, and a profile change makes that
+  // sentence wrong until it is redrawn.
+  go(current);
+}
+
 function headIcon(svg, title, fn) {
   const b = el('button', 'btn3 btnsm');
   b.innerHTML = svg;
@@ -418,22 +480,7 @@ const PROFILES = [
 
 async function loadState() {
   STATE = await api('/api/state');
-  const group = $('#profile-group');
-  group.innerHTML = '';
-  PROFILES.forEach(([id, label, note]) => {
-    const b = el('button', 'sg', label);
-    b.setAttribute('role', 'radio');
-    b.setAttribute('data-on', STATE.profile === id ? '1' : '0');
-    b.setAttribute('aria-checked', String(STATE.profile === id));
-    st(b, 'border:1px solid transparent;background:none;color:var(--ink-2);font-family:inherit;font-size:12.5px;padding:7px 12px;border-radius:999px;cursor:pointer;min-height:34px');
-    // Re-render the current view: the run screen states the worst case in words, and a
-    // profile change makes that sentence wrong until it is redrawn.
-    b.onclick = async () => { await post('/api/config', { profile: id }); await loadState(); go(current); };
-    group.appendChild(b);
-  });
-  const p = PROFILES.find((x) => x[0] === STATE.profile);
-  $('#profile-note').textContent = (p ? p[2] : '') + (STATE.network ? '  ·  tool network egress is ON' : '');
-
+  paintShellIcons();
   $('#side-workspace').textContent = STATE.workspace;
   $('#side-workspace').title = STATE.workspace;
 
@@ -473,8 +520,11 @@ function renderRun() {
   chips.id = 'attachments';
   composer.appendChild(chips);
   const wrap = st(el('div'), 'max-width:760px;margin:0 auto;display:flex;gap:9px;align-items:center');
-  const attach = el('button', 'btn3 btnsm', '+ Files');
-  attach.title = 'Point the run at files in this workspace';
+  const attach = el('button', 'btn3 btnsm');
+  attach.innerHTML = ICONS.clip;
+  attach.title = 'Attach files from this workspace';
+  attach.setAttribute('aria-label', 'Attach files from this workspace');
+  st(attach, 'display:inline-flex;align-items:center;justify-content:center;padding:11px;line-height:0;border-radius:999px');
   attach.onclick = openAttach;
   const input = el('input', 'fld');
   input.id = 'prompt';
@@ -701,6 +751,133 @@ async function openAttach(dir) {
   (document.getElementById('root') || document.body).appendChild(shade);
 }
 
+/**
+ * Inline markdown for the trace.
+ *
+ * The trace prints event messages verbatim, and one of those events is the answer itself —
+ * so a delivered answer showed up as literal asterisks around the number it had just spent
+ * four steps establishing. Inline only: bold, italic and code. A trace line is one line,
+ * and promoting it to block markdown would put headings and lists inside a log.
+ *
+ * Escaped before it is matched, because tool output reaches here and is not ours.
+ */
+function inlineMd(text) {
+  const esc = String(text == null ? '' : text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  return esc
+    .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\\*([^*\\n]+)\\*/g, '$1<em>$2</em>')
+    .replace(/\u0060([^\u0060]+)\u0060/g, '<code style="font-family:ui-monospace,monospace;font-size:.94em">$1</code>');
+}
+
+/**
+ * Syntax highlighting for the sandbox, in about twenty lines and no dependency.
+ *
+ * The code is escaped first and matched second, so a string containing an angle bracket
+ * cannot become markup. Order in the alternation is the whole algorithm: comments before
+ * strings before keywords, because a keyword inside a comment is a comment and a comment
+ * marker inside a string is a string.
+ *
+ * Every backslash here is doubled and the backtick is written as a unicode escape,
+ * because this file is
+ * one long template literal: a lone \n would become a real newline in the emitted regex and
+ * a lone backtick would end the page.
+ */
+function highlightJs(code) {
+  const esc = String(code)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  const RE = /(\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/)|('(?:\\\\.|[^'\\\\])*'|"(?:\\\\.|[^"\\\\])*"|\u0060(?:\\\\.|[^\u0060\\\\])*\u0060)|\\b(const|let|var|function|return|if|else|for|while|do|of|in|new|await|async|try|catch|finally|throw|typeof|instanceof|class|extends|import|export|from|null|undefined|true|false)\\b|\\b(\\d+(?:\\.\\d+)?)\\b|([A-Za-z_$][\\w$]*)(?=\\s*\\()/g;
+  const paint = (colour, text) => '<span style="color:' + colour + '">' + text + '</span>';
+  return esc.replace(RE, (m, comment, str, kw, numeric, call) => {
+    if (comment) return paint('#6b7684', m);
+    if (str) return paint('#e3c08d', m);
+    if (kw) return paint('#87a9f5', m);
+    if (numeric) return paint('#d7a8ff', m);
+    if (call) return paint('#6fd2c9', m);
+    return m;
+  });
+}
+
+/**
+ * The sandbox card: the code on the way in, the result on the way back.
+ *
+ * Two halves because that is how it happens — the code is known before the run and the
+ * output only after, and showing the code immediately means you can read it while the
+ * thing executes rather than waiting to find out what it did.
+ */
+function openSandboxCard(host, code, before) {
+  const source = String(code).trim();
+
+  // Dark in both themes, on purpose: this is a code surface, and the syntax colours are
+  // chosen against a dark ground. Following the page theme would leave them washed out on
+  // a pale block half the time.
+  const card = st(el('section'), 'margin:14px 0;border-radius:14px;overflow:hidden;background:#232a35;box-shadow:0 10px 26px rgba(15,20,30,.16);animation:rise .2s ease both');
+
+  const head = st(el('div'), 'display:flex;align-items:center;gap:10px;padding:9px 14px;background:#1c222c');
+  head.appendChild(st(el('span', 'xs'), 'color:#8b97a8;font-weight:600')).textContent = 'sandbox';
+  head.appendChild(st(el('span', 'xs mono'), 'color:#5f6b7c')).textContent = 'javascript';
+
+  const state = st(el('span', 'xs'), 'margin-left:auto;color:#8b97a8');
+  state.textContent = 'running';
+  head.appendChild(state);
+
+  const pre = st(el('pre', 'mono'), 'margin:0;padding:15px 17px;overflow-x:auto;line-height:1.62;font-size:12.5px;color:#cdd6e4;max-height:360px');
+  pre.innerHTML = highlightJs(source);
+
+  const copy = el('button', 'xs');
+  copy.textContent = 'Copy code';
+  st(copy, 'border:0;background:none;color:#8b97a8;font-family:inherit;font-size:11.5px;cursor:pointer;padding:3px 2px');
+  copy.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(source);
+      copy.textContent = 'Copied';
+    } catch (e) {
+      // The clipboard API is refused in some contexts. Telling someone to press Cmd-C
+      // without selecting anything for them to copy is worse than not offering the button,
+      // so select the code and let the keystroke do what it was going to do anyway.
+      const range = document.createRange();
+      range.selectNodeContents(pre);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      copy.textContent = 'selected — press Cmd-C';
+    }
+    setTimeout(() => { copy.textContent = 'Copy code'; }, 1800);
+  };
+  head.appendChild(copy);
+  card.appendChild(head);
+
+  card.appendChild(pre);
+
+  // Inserted above the answer rather than appended, because the answer element is created
+  // empty at the start and filled at the end: appending would put every piece of working
+  // below the conclusion it produced.
+  if (before && before.parentElement === host) host.insertBefore(card, before);
+  else host.appendChild(card);
+  return { card, state };
+}
+
+function closeSandboxCard(handle, data) {
+  const ok = data.ok !== false;
+  handle.state.textContent = '';
+  handle.state.appendChild(statusPill(ok ? 'returned' : 'rejected', ok ? 'ok' : 'dang'));
+
+  const out = String(data.output || '').trim();
+  if (!out) return;
+  const wrap = st(el('div'), 'border-top:1px solid #333c4a;background:#1c222c');
+  wrap.appendChild(st(el('p', 'xs', ok ? 'result' : 'rejected'), 'margin:0;padding:9px 17px 0;color:#8b97a8;font-weight:600'));
+  const pre = st(el('pre', 'mono'), 'margin:0;padding:5px 17px 14px;overflow-x:auto;line-height:1.6;font-size:12.5px;color:' + (ok ? '#a9dcc8' : '#e9a8a8') + ';max-height:260px;text-wrap:wrap;word-break:break-word');
+  // The summary is already bounded by the executor; this is belt and braces so one very
+  // wide line cannot push the composer off screen.
+  pre.textContent = out.length > 4000 ? out.slice(0, 4000) + '\\n...' : out;
+  wrap.appendChild(pre);
+  handle.card.appendChild(wrap);
+}
+
 /** One shape for a message you sent, whether it is being typed now or read back later. */
 function bubbleUser(text) {
   const you = st(el('div'), 'display:flex;flex-direction:column;align-items:flex-end;animation:rise .2s ease both;margin-bottom:18px');
@@ -721,6 +898,7 @@ async function doSend() {
 
   t.appendChild(bubbleUser(request));
 
+  let sandboxCard = null;
   const { row, body } = agentBlock();
   t.appendChild(row);
 
@@ -770,9 +948,21 @@ async function doSend() {
     if (ev.type === 'stage') { const to = String(ev.message).split('->').pop().trim(); addStage(to, 'idle'); }
     if (ev.type === 'step') { const s = String(ev.message).split('·')[1]; if (s) addStage(s.trim(), 'idle'); status.textContent = String(ev.message).split('·')[0].trim(); }
     if (ev.type === 'gate') { status.textContent = 'gate blocked'; }
+
+    // Code the agent wrote and ran gets a card in the conversation, not a line in the
+    // trace. It is the one tool whose *input* is the interesting part: everything else
+    // reports what it found, and this one reports what it computed, which is only worth
+    // anything if you can see the computation.
+    if (ev.type === 'tool' && ev.data && ev.data.tool === 'sandbox_run') {
+      if (ev.data.code) sandboxCard = openSandboxCard(body, ev.data.code, answer);
+      else if (sandboxCard) { closeSandboxCard(sandboxCard, ev.data); sandboxCard = null; }
+    }
+
     const line = st(el('div', 'xs'), 'display:flex;gap:9px;color:var(--ink-3);padding:1px 0');
     line.appendChild(st(el('span', 'mono', ev.type), 'flex:none;min-width:52px;color:var(--ink-3)'));
-    line.appendChild(st(el('span', null, ev.message), 'min-width:0;flex:1'));
+    const msg = st(el('span'), 'min-width:0;flex:1');
+    msg.innerHTML = inlineMd(ev.message);
+    line.appendChild(msg);
     trace.appendChild(line);
   });
 
