@@ -20,7 +20,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import { HatsError } from '../core/errors.js';
-import { PathGuard, hatsHome } from '../core/paths.js';
+import { PathGuard, controlPlane, hatsHome } from '../core/paths.js';
 
 export type PreviewKind =
   | 'markdown'
@@ -79,7 +79,10 @@ export function mimeFor(file: string): string {
 }
 
 export function guardFor(workspaceRoot: string): PathGuard {
-  return new PathGuard([workspaceRoot, hatsHome()]);
+  // The panel browses $HATS_HOME on purpose — runs and the registry are there and a person
+  // should be able to read them. The API key is the one thing it must never hand back, so
+  // credentials.json is refused here rather than relying on nobody typing the path.
+  return new PathGuard([workspaceRoot, hatsHome()], { secret: controlPlane().secret });
 }
 
 export async function listDirectory(

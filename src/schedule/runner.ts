@@ -16,7 +16,8 @@ import { readFileSync } from 'node:fs';
 import { unlink, writeFile } from 'node:fs/promises';
 
 import { HatsError, toHatsError } from '../core/errors.js';
-import { Logger } from '../core/logger.js';
+import { Logger, flushAllLogs, runtimeLogger } from '../core/logger.js';
+import { sweepAll } from '../core/retention.js';
 import { schedulerLockPath } from '../core/paths.js';
 import { ensureDir, exists } from '../core/store.js';
 import { hatsHome } from '../core/paths.js';
@@ -39,6 +40,8 @@ import {
 } from './unattended.js';
 
 const TICK_MS = 30_000;
+/** Retention is a daily concern, not a per-tick one. */
+const SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export interface ScheduleOutcome {
   scheduleId: string;
@@ -63,9 +66,10 @@ export class Scheduler {
   private readonly inFlight = new Set<string>();
   private lockHeld = false;
   private stopped = false;
+  private lastSweep = 0;
 
   constructor(
-    private readonly logger = new Logger({ base: { component: 'schedule' } }),
+    private readonly logger: Logger = runtimeLogger('schedule'),
     private readonly onOutcome?: OutcomeSink,
     private readonly approverSource?: ApproverSource,
   ) {}
@@ -84,7 +88,10 @@ export class Scheduler {
     // nothing. The panel keeps itself open with its socket, so a ref'd timer costs it
     // nothing. [Found by watching a 1-minute schedule never fire, 2026-08-14.]
     this.timer = setInterval(() => void this.tick(), TICK_MS);
-    this.logger.info('scheduler started', { tickMs: TICK_MS });
+    this.logger.info('scheduler.started', { tickMs: TICK_MS, pid: process.pid });
+    // Retention runs off the daemon because the daemon is the thing that is always up.
+    // A policy that only applies when someone opens the panel is not a policy.
+    void this.sweep();
     await this.tick();
   }
 
@@ -92,6 +99,11 @@ export class Scheduler {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.logger.info('scheduler.stopped', { pid: process.pid });
+    // Runtime records are queued and fire-and-forget, so a daemon that exits without this
+    // loses whatever had not reached the disk yet — which is exactly the tail you want
+    // after a shutdown you did not expect.
+    await flushAllLogs();
     if (this.lockHeld) {
       await unlink(schedulerLockPath()).catch(() => undefined);
       this.lockHeld = false;
@@ -101,11 +113,13 @@ export class Scheduler {
   /** One pass. Exposed so tests can drive it without waiting 30 seconds. */
   async tick(now = new Date()): Promise<ScheduleOutcome[]> {
     if (this.stopped) return [];
+    // Self-throttled to once a day; safe to call on every tick.
+    void this.sweep();
     let schedules: ScheduleRecord[];
     try {
       schedules = await listSchedules();
     } catch (e) {
-      this.logger.warn('could not read schedules', { error: toHatsError(e).message });
+      this.logger.warn('scheduler.schedules.unreadable', { code: toHatsError(e).code, error: toHatsError(e).message });
       return [];
     }
 
@@ -116,7 +130,7 @@ export class Scheduler {
         due = dueNow(record, now);
       } catch (e) {
         // A corrupt expression must not stop the other schedules from running.
-        this.logger.warn('skipping schedule with a bad expression', {
+        this.logger.warn('schedule.expression.invalid', {
           id: record.id,
           error: toHatsError(e).message,
         });
@@ -125,7 +139,7 @@ export class Scheduler {
       if (!due.due) continue;
 
       if (this.inFlight.has(record.id)) {
-        this.logger.warn('previous run still going, skipping this firing', { id: record.id });
+        this.logger.warn('schedule.skipped.inflight', { scheduleId: record.id, workspace: record.workspace });
         await saveSchedule({ ...record, lastStatus: 'skipped' });
         continue;
       }
@@ -177,7 +191,12 @@ export class Scheduler {
         missed,
         error: `${err.code}: ${err.message}`,
       };
-      this.logger.warn('scheduled run failed', { id: record.id, error: err.message });
+      this.logger.warn('schedule.run.failed', {
+        scheduleId: record.id,
+        workspace: record.workspace,
+        code: err.code,
+        error: err.message,
+      });
     } finally {
       this.inFlight.delete(record.id);
     }
@@ -197,10 +216,39 @@ export class Scheduler {
       try {
         await this.onOutcome(outcome, record);
       } catch (e) {
-        this.logger.warn('notify failed', { id: record.id, error: toHatsError(e).message });
+        this.logger.warn('schedule.notify.failed', {
+          scheduleId: record.id,
+          code: toHatsError(e).code,
+          error: toHatsError(e).message,
+        });
       }
     }
     return outcome;
+  }
+
+  /**
+   * Applies the retention policy, at most once a day.
+   *
+   * Deliberately fire-and-forget and deliberately quiet on failure: reclaiming disk must
+   * never delay or fail a scheduled run. What it did is logged, including zero, so an
+   * unexpectedly growing store is visible rather than something to be discovered later.
+   */
+  private async sweep(): Promise<void> {
+    const since = Date.now() - this.lastSweep;
+    if (this.lastSweep > 0 && since < SWEEP_INTERVAL_MS) return;
+    this.lastSweep = Date.now();
+    try {
+      const result = await sweepAll();
+      this.logger.info('retention.swept', {
+        runsRemoved: result.runsRemoved,
+        transcriptsRemoved: result.transcriptsRemoved,
+        bytesReclaimed: result.bytesReclaimed,
+        runtimeLogRotated: result.runtimeLogRotated,
+        skipped: result.skipped,
+      });
+    } catch (e) {
+      this.logger.warn('retention.sweep.failed', { error: toHatsError(e).message });
+    }
   }
 
   private async takeLock(): Promise<void> {
@@ -216,7 +264,7 @@ export class Scheduler {
         );
       }
       // Stale lock from a killed process: taking it over is correct, and worth saying.
-      this.logger.info('clearing a stale scheduler lock', { pid });
+      this.logger.info('scheduler.lock.stale.cleared', { pid });
     }
     await writeFile(lock, String(process.pid), 'utf8');
     this.lockHeld = true;

@@ -244,7 +244,7 @@ export const writeFile: ToolHandler = {
     minProfile: 'assisted',
   },
   async run(args, ctx): Promise<ToolResult> {
-    const file = ctx.guard.resolve(String(args['path']), ctx.workspaceRoot);
+    const file = ctx.guard.resolve(String(args['path']), ctx.workspaceRoot, 'write');
     const content = String(args['content']);
     const existed = await fsp
       .stat(file)
@@ -316,7 +316,7 @@ export const applyPatch: ToolHandler = {
     minProfile: 'assisted',
   },
   async run(args, ctx): Promise<ToolResult> {
-    const file = ctx.guard.resolve(String(args['path']), ctx.workspaceRoot);
+    const file = ctx.guard.resolve(String(args['path']), ctx.workspaceRoot, 'write');
     const find = String(args['find']);
     const replace = String(args['replace']);
     const raw = await fsp.readFile(file, 'utf8').catch(() => {

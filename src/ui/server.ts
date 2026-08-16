@@ -37,8 +37,17 @@ import type { Session } from '../cli/session.js';
 import { listDirectory, preview, readRaw, revealInFolder } from './files.js';
 import { renderMarkdown } from './markdown.js';
 import { CATALOGUE, OllamaAdmin, SUGGESTED, catalogueWithSizes, searchHuggingFace } from './models.js';
+import { collectOutputs } from './outputs.js';
 import { renderPage } from './page.js';
 import { catalogue, quote } from './pricing.js';
+
+/**
+ * A run id, as `newRunId` writes it: a compact UTC stamp, a hyphen, six hex characters.
+ * Every endpoint that joins one onto a path checks it here rather than carrying its own
+ * pattern, because the pattern three of them carried allowed a dot — and a dot allows `..`,
+ * which is a path segment. Nothing on disk needs one.
+ */
+const RUN_ID = /^[\w-]+$/;
 
 /**
  * Settings this panel session owns and should keep across a re-read: the ones a flag set
@@ -547,79 +556,38 @@ export async function startUi(
       }
 
       case 'GET /api/outputs': {
-        // What the agent produced, per conversation.
-        //
-        // "Outputs" used to be the workspace file browser, whose own blurb said it showed
-        // the files the agent can *see* — a reading surface labelled as a producing one. The
-        // things it actually makes are artifacts, which are its evidence, and the files it
-        // wrote. Both are already on disk; nothing here was being shown.
-        const dir = path.join(workspaceDir(session.slug), 'runs');
-        const fsp = await import('node:fs/promises');
-        const ids = (await fsp.readdir(dir).catch(() => [])).sort().reverse().slice(0, 40);
-
-        const WRITERS = new Set(['write_file', 'apply_patch']);
-        const runs = [];
-        for (const id of ids) {
-          const record = await readJson<Record<string, unknown> | null>(
-            path.join(dir, id, 'run.json'),
-            null,
-          );
-          if (!record) continue;
-
-          const observations = (record['observations'] ?? []) as Array<{
-            tool?: string;
-            artifactId?: string;
-            summary?: string;
-            ok?: boolean;
-          }>;
-          const artifacts = observations
-            .filter((o) => o.artifactId)
-            .map((o) => ({ id: o.artifactId, tool: o.tool ?? '?', summary: (o.summary ?? '').slice(0, 160) }));
-
-          // Written paths come from the audit trail rather than the run record, because the
-          // record keeps the observation and the audit keeps the arguments — and the path is
-          // an argument.
-          const audit = await fsp.readFile(path.join(dir, id, 'audit.jsonl'), 'utf8').catch(() => '');
-          const files = [
-            ...new Set(
-              audit
-                .split('\n')
-                .filter((l) => l.includes('tool.call'))
-                .map((l) => {
-                  try {
-                    return JSON.parse(l) as { tool?: string; args?: Record<string, unknown> };
-                  } catch {
-                    return null;
-                  }
-                })
-                .filter((e): e is { tool?: string; args?: Record<string, unknown> } => e !== null)
-                .filter((e) => e.tool && WRITERS.has(e.tool))
-                .map((e) => String(e.args?.['path'] ?? e.args?.['file'] ?? ''))
-                .filter(Boolean),
-            ),
-          ];
-
-          if (!artifacts.length && !files.length) continue;
-          runs.push({
-            runId: id,
-            request: record['request'] ?? '',
-            at: record['startedAt'] ?? '',
-            ok: record['ok'] === true,
-            files,
-            artifacts,
-          });
-        }
-        return json(res, 200, { runs, root: session.workspaceRoot });
+        // What the agent produced, per conversation. The reading is in ui/outputs.ts.
+        const produced = await collectOutputs(path.join(workspaceDir(session.slug), 'runs'));
+        return json(res, 200, { ...produced, root: session.workspaceRoot });
       }
 
       case 'GET /api/artifact': {
         const runId = url.searchParams.get('runId') ?? '';
         const id = url.searchParams.get('id') ?? '';
-        if (!/^[\w.-]+$/.test(runId) || !/^[\w]+$/.test(id)) return json(res, 400, { error: 'bad id' });
+        // An artifact id is `art_<hex>`, so \w alone covers it.
+        if (!RUN_ID.test(runId) || !/^\w+$/.test(id)) return json(res, 400, { error: 'bad id' });
         const file = path.join(workspaceDir(session.slug), 'runs', runId, 'artifacts', `${id}.json`);
-        const artifact = await readJson<Record<string, unknown> | null>(file, null);
+        const artifact = await readJson<Record<string, unknown> | null>(file, null).catch(() => null);
         if (!artifact) return json(res, 404, { error: 'NOT_FOUND' });
-        return json(res, 200, { artifact });
+
+        // A payload is deliberately unbounded on disk — that is the point of an artifact —
+        // so it is bounded here rather than shipped whole and cut in the browser. The cut is
+        // reported with the path to the whole thing, the same bargain shapeText makes with
+        // the model.
+        const LIMIT = 40_000;
+        const whole = JSON.stringify(artifact['payload'] ?? null, null, 2) ?? 'null';
+        return json(res, 200, {
+          id: artifact['id'] ?? id,
+          tool: artifact['tool'] ?? '?',
+          kind: artifact['kind'] ?? '?',
+          createdAt: artifact['createdAt'] ?? '',
+          summary: artifact['summary'] ?? '',
+          provenance: artifact['provenance'] ?? {},
+          payload: whole.slice(0, LIMIT),
+          payloadChars: whole.length,
+          truncated: whole.length > LIMIT,
+          file,
+        });
       }
 
       case 'GET /api/proposals': {
@@ -818,7 +786,7 @@ export async function startUi(
         // Past conversations. The transcript is already on disk for the audit trail; there
         // was simply no way to read one back without opening the JSONL by hand.
         const id = url.searchParams.get('runId') ?? '';
-        if (!/^[\w.-]+$/.test(id)) return json(res, 400, { error: 'bad runId' });
+        if (!RUN_ID.test(id)) return json(res, 400, { error: 'bad runId' });
         const dir = path.join(workspaceDir(session.slug), 'runs', id);
         const record = await readJson<Record<string, unknown> | null>(
           path.join(dir, 'run.json'),
@@ -859,7 +827,7 @@ export async function startUi(
         // the browser alone would look resumed and behave like a fresh conversation.
         const body = (await readBody(req)) as { runId?: string };
         const id = String(body.runId ?? '');
-        if (!/^[\w.-]+$/.test(id)) return json(res, 400, { error: 'bad runId' });
+        if (!RUN_ID.test(id)) return json(res, 400, { error: 'bad runId' });
 
         const dir = path.join(workspaceDir(session.slug), 'runs', id);
         const record = await readJson<Record<string, unknown> | null>(path.join(dir, 'run.json'), null);

@@ -14,7 +14,8 @@
 
 import { randomBytes } from 'node:crypto';
 
-import { Logger } from '../core/logger.js';
+import { Logger, runtimeLogger } from '../core/logger.js';
+import { auditQuietly } from '../core/audit.js';
 import type { ApprovalRequest } from '../tools/types.js';
 import type { Trigger } from '../schedule/unattended.js';
 import type { ChannelTransport } from './types.js';
@@ -26,6 +27,8 @@ interface Pending {
   code: string;
   tool: string;
   from: string;
+  /** Whose data the pending mutation would touch; carried so the audit record has a subject. */
+  workspace: string | null;
   resolve: (answer: { approved: boolean; by?: string; reason: string }) => void;
   timer: NodeJS.Timeout;
 }
@@ -34,7 +37,7 @@ export class RemoteApprovals {
   private readonly pending = new Map<string, Pending>();
 
   constructor(
-    private readonly logger = new Logger({ base: { component: 'approve' } }),
+    private readonly logger: Logger = runtimeLogger('approve'),
     private readonly windowMs = DEFAULT_WINDOW_MS,
   ) {}
 
@@ -51,6 +54,7 @@ export class RemoteApprovals {
     to: string,
     request: ApprovalRequest,
     trigger: Trigger,
+    workspace: string | null = null,
   ): Promise<{ approved: boolean; by?: string; reason: string }> {
     // Short and unambiguous: four hex characters is enough to bind an answer to a request
     // without being something anyone has to type carefully at 3am.
@@ -80,7 +84,7 @@ export class RemoteApprovals {
         resolve({ approved: false, reason: `nobody answered within ${this.windowMs / 60_000} minutes` });
       }, this.windowMs);
 
-      this.pending.set(code, { code, tool: request.tool, from: to, resolve, timer });
+      this.pending.set(code, { code, tool: request.tool, from: to, workspace, resolve, timer });
     });
   }
 
@@ -98,6 +102,18 @@ export class RemoteApprovals {
     // Bound to the sender it was asked of. Another allowlisted person cannot answer for them.
     if (entry.from !== from) {
       this.logger.warn('approval.wrong-sender', { code, from, expected: entry.from });
+      // Someone allowlisted tried to approve a mutation put to a different person. That is
+      // an authorisation decision and belongs in the accountability record.
+      // `tryAnswer` is synchronous by contract, so this is dispatched rather than awaited:
+      // the audit queue keeps the ordering, and only a process death loses the record.
+      void auditQuietly({
+        action: 'authz.denied',
+        actor: from,
+        source: 'channel',
+        subject: entry.workspace,
+        outcome: 'denied',
+        detail: { reason: 'answered an approval addressed to another sender', tool: entry.tool },
+      });
       return false;
     }
 
@@ -105,6 +121,14 @@ export class RemoteApprovals {
     clearTimeout(entry.timer);
     this.pending.delete(code);
     this.logger.warn('approval.answered', { tool: entry.tool, code, approved: yes, by: from });
+    void auditQuietly({
+      action: yes ? 'authz.granted' : 'authz.denied',
+      actor: from,
+      source: 'channel',
+      subject: entry.workspace,
+      outcome: yes ? 'allowed' : 'denied',
+      detail: { tool: entry.tool, via: 'channel approval' },
+    });
     entry.resolve({
       approved: yes,
       by: from,
