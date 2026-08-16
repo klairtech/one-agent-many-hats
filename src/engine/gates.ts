@@ -9,7 +9,7 @@
 
 import type { Artifact } from '../tools/artifacts.js';
 import { extractClaims, reconcile, type ReconcileReport } from './reconcile.js';
-import { askedInProse, completionClaimed } from './vigilance.js';
+import { askedInProse, completionClaimed, promisedFileNotWritten } from './vigilance.js';
 import type { ToolObservation } from '../tools/types.js';
 
 /**
@@ -31,6 +31,7 @@ export const ENFORCEMENT_POINTS: Record<string, string> = {
   'gates.sandboxOutputValidated': 'src/engine/gates.ts — sandboxOutputValidated',
   'gates.completionSupported': 'src/engine/gates.ts — completionSupported',
   'gates.clarificationAsked': 'src/engine/gates.ts — clarificationAsked',
+  'gates.fileReallyExists': 'src/engine/gates.ts — fileReallyExists',
 };
 
 export function knownEnforcementPoints(): Set<string> {
@@ -141,6 +142,7 @@ export function runVerificationGates(input: VerificationInput): GateFinding[] {
   if (input.usedTools) findings.push(numbersReconciled(input));
   if (input.observations) findings.push(completionSupported(input));
   if (input.observations) findings.push(clarificationAsked(input));
+  if (input.observations) findings.push(fileReallyExists(input));
   return findings;
 }
 
@@ -183,6 +185,25 @@ function clarificationAsked(input: VerificationInput): GateFinding {
       : {
           backtrack:
             'call ask_user with fields for exactly those values, marking every credential type "secret", instead of asking for them in the answer',
+        }),
+  };
+}
+
+/**
+ * "Ready for download" is a claim about the filesystem, and the filesystem is checkable.
+ */
+function fileReallyExists(input: VerificationInput): GateFinding {
+  const check = promisedFileNotWritten(input.draft, input.observations ?? []);
+  return {
+    gate: 'gates.fileReallyExists',
+    ruleId: 'rule/no-imaginary-files',
+    passed: check.ok,
+    detail: check.detail,
+    ...(check.ok
+      ? {}
+      : {
+          backtrack:
+            'either write the file with write_file, or drop the promise and say the content is in the answer itself',
         }),
   };
 }

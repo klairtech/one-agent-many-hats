@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { askedInProse, completionClaimed, destroyingUnread, editDistanceWithin, nearMiss, stalled } from '../src/engine/vigilance.js';
+import { askedInProse, completionClaimed, destroyingUnread, editDistanceWithin, nearMiss, promisedFileNotWritten, stalled } from '../src/engine/vigilance.js';
 import type { ToolObservation } from '../src/tools/types.js';
 
 function obs(over: Partial<ToolObservation>): ToolObservation {
@@ -161,4 +161,37 @@ test('ordinary answers do not trip it', () => {
   assert.equal(ok('The credentials are read from the AWS profile named "prod" (art_2).'), true);
   // Reporting a refusal it already hit.
   assert.equal(ok('The access key in the environment is expired, so the query failed.'), true);
+});
+
+/**
+ * The live failure: a research run computed a fundraising strategy in the sandbox and
+ * closed with "three detailed strategy artifacts are ready for download". No file was
+ * written, and the skill had no write_file to write one with — so the reader went looking
+ * for a document that was never going to exist. An artifact is evidence inside the run
+ * record; a file is a thing on disk. The words are close enough to swap without noticing.
+ */
+test('promising a downloadable file while writing none is blocked', () => {
+  const draft =
+    'The strategy is set out above.\nThree detailed strategy artifacts are ready for download.';
+  const check = promisedFileNotWritten(draft, [obs({ tool: 'sandbox_run' }), obs({ tool: 'web_search' })]);
+  assert.equal(check.ok, false);
+  assert.match(check.detail, /nothing was\s+written/);
+});
+
+test('a run that really wrote a file may say so', () => {
+  const draft = 'I have written the report to reports/strategy.md.';
+  assert.equal(promisedFileNotWritten(draft, [obs({ tool: 'write_file', ok: true })]).ok, true);
+  assert.equal(promisedFileNotWritten(draft, [obs({ tool: 'apply_patch', ok: true })]).ok, true);
+});
+
+test('the honest close is exactly what the gate is trying to produce', () => {
+  // The sentence one edit away from the blocked one has to pass, or the gate teaches
+  // nothing and just annoys.
+  for (const honest of [
+    'The strategy is below. No file was written — the content is in this answer.',
+    'Nothing was written to disk; copy the outline from above.',
+    'Here is the plan, with the numbers cited to their artifacts.',
+  ]) {
+    assert.equal(promisedFileNotWritten(honest, [obs({ tool: 'sandbox_run' })]).ok, true, honest);
+  }
 });
