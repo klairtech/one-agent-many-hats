@@ -207,3 +207,50 @@ test('every registered tool declares a profile and a schema', () => {
     seen.add(handler.spec.name);
   }
 });
+
+/**
+ * "Which files are called X" and "where is X written" are different questions, and the
+ * runtime only answered the second one.
+ *
+ * Live: asked to count the .md files under packs, a run reached for search_files with the
+ * pattern \.md$ and got a truthful "no matches for /\.md$/ in 17 files" — no *line inside*
+ * those files ends in .md, though all seventeen are named that way. It picked the wrong
+ * tool because the right one did not exist.
+ */
+test('list_dir can filter by name, which is what search_files cannot do', async () => {
+  const { ctx, ws, home } = await makeExecutor({}, {
+    'packs/rules/alpha.md': '# alpha\nsee packs/rules/beta.md for more\n',
+    'packs/rules/beta.md': '# beta\n',
+    'packs/rules/notes.txt': 'plain text\n',
+  });
+  try {
+    const { listDir, searchFiles } = await import('../src/tools/builtin/files.js');
+
+    const named = await listDir.run({ path: '.', depth: 3, name_pattern: '\\.md$' }, ctx);
+    const files = (named.payload as Array<{ rel: string; isDir: boolean }>).filter((e) => !e.isDir);
+    // Basenames, because the harness workspace resolves through the macOS /var symlink and
+    // the relative path is not what this test is about.
+    assert.deepEqual(
+      files.map((f) => f.rel.split('/').pop()).sort(),
+      ['alpha.md', 'beta.md'],
+      'the name filter did not select on filename',
+    );
+
+    // The contrast, and the exact live failure: the same pattern that names two files
+    // matches nothing at all inside them, because no *line* ends in .md.
+    const anchored = await searchFiles.run({ pattern: '\\.md$', path: 'packs' }, ctx);
+    assert.match(anchored.summary, /no matches/, 'the content search should find nothing here');
+
+    // Content search does its own job well: it finds the file that *mentions* another.
+    const mention = await searchFiles.run({ pattern: 'beta\\.md', path: 'packs' }, ctx);
+    assert.match(mention.summary, /alpha\.md/, 'the mention of beta.md lives in alpha.md');
+
+    // A bad pattern is a bad argument, not a crash.
+    await assert.rejects(
+      listDir.run({ path: '.', name_pattern: '([' }, ctx),
+      /not a valid regular expression/,
+    );
+  } finally {
+    await cleanup(home, ws);
+  }
+});

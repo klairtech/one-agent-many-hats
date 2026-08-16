@@ -46,7 +46,19 @@ const BOOTSTRAP = `
 
   function load_artifact(id) {
     if (!Object.prototype.hasOwnProperty.call(__DATA__, id)) {
-      throw new Error('no artifact "' + id + '" was bound to this run. Bound: ' + Object.keys(__DATA__).join(', '));
+      // Naming the fix, not just the fact.
+      //
+      // Calling load_artifact(id) without listing that id in artifact_ids is the single
+      // most common way a snippet fails: the code reads correctly, the id is real, and the
+      // binding is a *separate argument* that is easy to leave out. The old message said
+      // which artifact was missing and left the reader to work out that a tool parameter
+      // was the answer, so the next attempt usually changed the code instead.
+      const bound = Object.keys(__DATA__);
+      throw new Error(
+        'artifact "' + id + '" is not bound to this snippet. ' +
+          (bound.length ? 'Bound: ' + bound.join(', ') + '. ' : 'Nothing is bound. ') +
+          'Add it to the artifact_ids argument of sandbox_run — the code alone cannot reach it.',
+      );
     }
     return __DATA__[id];
   }

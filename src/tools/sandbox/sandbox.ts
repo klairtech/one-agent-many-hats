@@ -42,7 +42,8 @@ export const sandboxRun: ToolHandler = {
         },
         artifact_ids: {
           type: 'array',
-          description: 'Artifacts to bind, by id. Only these are visible to the snippet.',
+          description:
+            'Artifacts to bind, by id. Required for every id the snippet passes to load_artifact — the snippet can only see what is listed here, so omitting one fails the call however correct the code is.',
           items: { type: 'string' },
         },
         expect: {
