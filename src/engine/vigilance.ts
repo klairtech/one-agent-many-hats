@@ -302,3 +302,39 @@ export function stalled(
   }
   return { stalled: false, reason: '' };
 }
+
+/**
+ * A background command that was started and never read.
+ *
+ * This one is unlike the other checks here, because the tool call it examines *succeeded*.
+ * `run_command` with background:true returns an id in milliseconds and reports no error —
+ * which is indistinguishable, from inside the loop, from the work having been done. The
+ * observation list says a call was made and did not fail. Only the absence of a second call
+ * tells you the difference between starting the test suite and knowing what it said.
+ */
+export function startedButNeverRead(
+  draft: string,
+  observations: ToolObservation[],
+): { ok: true } | { ok: false; detail: string } {
+  // Matched on the summary, because an observation records what a call reported rather than
+  // what it was passed. The background branch of run_command opens with "started job_", and
+  // that prefix is the only thing that distinguishes it from a command that actually ran.
+  const started = observations.filter((o) => o.ok && o.tool === 'run_command' && o.summary.startsWith('started job_'));
+  if (started.length === 0) return { ok: true };
+  if (observations.some((o) => o.tool === 'command_output')) return { ok: true };
+
+  // Only when the answer actually leans on it. A run that started something, said nothing
+  // about it and answered a different question has not misled anyone.
+  const CLAIMS = [
+    'test', 'suite', 'build', 'compil', 'server', 'passed', 'passes', 'failing', 'succeeded', 'running',
+  ];
+  const lower = draft.toLowerCase();
+  if (!CLAIMS.some((word) => lower.includes(word))) return { ok: true };
+
+  return {
+    ok: false,
+    detail:
+      `${started.length} background command(s) were started and never read, and the answer talks about ` +
+      `what they did. Starting one returns an id, not a result.`,
+  };
+}

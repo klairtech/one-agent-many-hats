@@ -167,6 +167,23 @@ export const searchFiles: ToolHandler = {
           description: 'Comma-separated file extensions to include, e.g. "ts,tsx". Default: all text files.',
         },
         max_results: { type: 'integer', description: 'Cap on matches returned. Default 60.', minimum: 1, maximum: 500 },
+        context: {
+          type: 'integer',
+          description:
+            'Lines of surrounding context to return with each match, above and below. Default 0. Two or three is usually the difference between knowing a symbol exists and knowing what it does — cheaper than reading the whole file afterwards.',
+          minimum: 0,
+          maximum: 10,
+        },
+        ignore_case: {
+          type: 'boolean',
+          description:
+            'Match without regard to case. Default true. Set it false when the case is the point — Config and config are different identifiers, and a case-blind search for one of them returns both.',
+        },
+        files_only: {
+          type: 'boolean',
+          description:
+            'Return the list of files that contain a match and how many each has, instead of the matching lines. Use it when the question is "where does this live", not "what does it say".',
+        },
       },
       required: ['pattern'],
     },
@@ -191,9 +208,10 @@ export const searchFiles: ToolHandler = {
         ? rawPattern.slice(1, rawPattern.lastIndexOf('/'))
         : rawPattern;
 
+    const ignoreCase = args['ignore_case'] !== false;
     let re: RegExp;
     try {
-      re = new RegExp(pattern, 'gi');
+      re = new RegExp(pattern, ignoreCase ? 'gi' : 'g');
     } catch (e) {
       throw new HatsError('TOOL_INPUT_INVALID', `invalid regex: ${(e as Error).message}`, {
         pattern: args['pattern'],
@@ -214,7 +232,10 @@ export const searchFiles: ToolHandler = {
           },
         ]
       : await walk(root, 12, ctx.workspaceRoot);
-    const hits: Array<{ file: string; line: number; text: string }> = [];
+    const context = Math.min(Number(args['context'] ?? 0), 10);
+    const filesOnly = args['files_only'] === true;
+    const hits: Hit[] = [];
+    const perFile: Array<{ file: string; matches: number }> = [];
     let filesScanned = 0;
 
     for (const entry of entries) {
@@ -230,27 +251,64 @@ export const searchFiles: ToolHandler = {
       if (looksBinary(content)) continue;
       filesScanned++;
       const lines = content.split('\n');
+      let inThisFile = 0;
       for (let i = 0; i < lines.length && hits.length < max; i++) {
         re.lastIndex = 0;
         const line = lines[i] ?? '';
-        if (re.test(line)) {
-          hits.push({ file: entry.rel, line: i + 1, text: line.trim().slice(0, 240) });
+        if (!re.test(line)) continue;
+        inThisFile++;
+        if (filesOnly) continue;
+        const hit: Hit = { file: entry.rel, line: i + 1, text: line.trim().slice(0, 240) };
+        if (context > 0) {
+          hit.before = lines.slice(Math.max(0, i - context), i).map((l) => l.slice(0, 240));
+          hit.after = lines.slice(i + 1, i + 1 + context).map((l) => l.slice(0, 240));
         }
+        hits.push(hit);
       }
-      if (hits.length >= max) break;
+      if (inThisFile > 0) perFile.push({ file: entry.rel, matches: inThisFile });
+      if (!filesOnly && hits.length >= max) break;
+      if (filesOnly && perFile.length >= max) break;
     }
 
-    const body = hits.map((h) => `${h.file}:${h.line}: ${h.text}`).join('\n');
+    // "Where does this live" and "what does it say" are different questions, and answering
+    // the first with a hundred matching lines is how a search eats a context window.
+    if (filesOnly) {
+      const body = perFile.map((f) => `${f.file} (${f.matches})`).join('\n');
+      return {
+        summary:
+          perFile.length === 0
+            ? `no file under ${path.relative(ctx.workspaceRoot, root) || '.'} contains /${pattern}/ (${filesScanned} searched)`
+            : `${perFile.length} file(s) contain /${pattern}/:\n${body}`,
+        payload: perFile,
+        provenance: { pattern, rawPattern, root, filesScanned, filesOnly: true },
+      };
+    }
+
+    const render = (h: Hit): string => {
+      if (!context) return `${h.file}:${h.line}: ${h.text}`;
+      const before = (h.before ?? []).map((l, k) => `  ${h.line - (h.before ?? []).length + k}  ${l}`);
+      const after = (h.after ?? []).map((l, k) => `  ${h.line + k + 1}  ${l}`);
+      return [`${h.file}:${h.line}`, ...before, `> ${h.line}  ${h.text}`, ...after].join('\n');
+    };
+    const body = hits.map(render).join(context ? '\n\n' : '\n');
     return {
       summary:
         hits.length === 0
           ? `no matches for /${pattern}/ in ${filesScanned} files under ${path.relative(ctx.workspaceRoot, root) || '.'}`
           : `${hits.length}${hits.length >= max ? '+ (capped)' : ''} matches in ${filesScanned} files:\n${body}`,
       payload: hits,
-      provenance: { pattern, rawPattern, root, filesScanned },
+      provenance: { pattern, rawPattern, root, filesScanned, ...(context ? { context } : {}), ...(ignoreCase ? {} : { caseSensitive: true }) },
     };
   },
 };
+
+interface Hit {
+  file: string;
+  line: number;
+  text: string;
+  before?: string[];
+  after?: string[];
+}
 
 export const writeFile: ToolHandler = {
   spec: {

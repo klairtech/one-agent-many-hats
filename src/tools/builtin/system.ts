@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 
 import { HatsError } from '../../core/errors.js';
 import { assertToolNetworkAllowed } from '../../core/net.js';
+import { startBackgroundCommand } from './background.js';
 import { shapeText } from '../artifacts.js';
 import type { ToolHandler, ToolResult } from '../types.js';
 
@@ -23,6 +24,11 @@ export const runCommand: ToolHandler = {
       type: 'object',
       properties: {
         command: { type: 'string', description: 'The command line, run through the shell.' },
+        background: {
+          type: 'boolean',
+          description:
+            'Start it and return immediately with an id, instead of waiting. Use this for anything that takes real time — a test suite, a build, a dev server — then read it with command_output and end it with stop_command. Waiting is capped at ten minutes, and a command that hits the cap loses everything it printed.',
+        },
         timeout_ms: {
           type: 'integer',
           description: 'Wall-clock cap. Default 120000, max 600000.',
@@ -39,6 +45,18 @@ export const runCommand: ToolHandler = {
   async run(args, ctx): Promise<ToolResult> {
     const command = String(args['command']);
     const timeoutMs = Math.min(Number(args['timeout_ms'] ?? DEFAULT_COMMAND_TIMEOUT_MS), 600_000);
+
+    if (args['background'] === true) {
+      const job = startBackgroundCommand(command, ctx.workspaceRoot, ctx.runId);
+      return {
+        summary:
+          `started ${job.id} in the background: ${command}\n` +
+          `Read it with command_output({ id: "${job.id}" }) and end it with stop_command. ` +
+          `Nothing has been read yet, so you do not know whether it works.`,
+        payload: { id: job.id, command, background: true },
+        provenance: { command, cwd: ctx.workspaceRoot, background: true },
+      };
+    }
 
     const result = await new Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }>(
       (resolve) => {

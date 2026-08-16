@@ -9,7 +9,7 @@
 
 import type { Artifact } from '../tools/artifacts.js';
 import { extractClaims, reconcile, type ReconcileReport } from './reconcile.js';
-import { askedInProse, completionClaimed, promisedFileNotWritten } from './vigilance.js';
+import { askedInProse, completionClaimed, promisedFileNotWritten, startedButNeverRead } from './vigilance.js';
 import type { ToolObservation } from '../tools/types.js';
 
 /**
@@ -32,6 +32,7 @@ export const ENFORCEMENT_POINTS: Record<string, string> = {
   'gates.completionSupported': 'src/engine/gates.ts — completionSupported',
   'gates.clarificationAsked': 'src/engine/gates.ts — clarificationAsked',
   'gates.fileReallyExists': 'src/engine/gates.ts — fileReallyExists',
+  'gates.backgroundRead': 'src/engine/gates.ts — backgroundRead',
 };
 
 export function knownEnforcementPoints(): Set<string> {
@@ -143,6 +144,7 @@ export function runVerificationGates(input: VerificationInput): GateFinding[] {
   if (input.observations) findings.push(completionSupported(input));
   if (input.observations) findings.push(clarificationAsked(input));
   if (input.observations) findings.push(fileReallyExists(input));
+  if (input.observations) findings.push(backgroundRead(input));
   return findings;
 }
 
@@ -204,6 +206,26 @@ function fileReallyExists(input: VerificationInput): GateFinding {
       : {
           backtrack:
             'either write the file with write_file, or drop the promise and say the content is in the answer itself',
+        }),
+  };
+}
+
+/**
+ * rule/read-what-you-started. The only gate here that fires on a *successful* tool call —
+ * see startedButNeverRead for why that is the whole point.
+ */
+function backgroundRead(input: VerificationInput): GateFinding {
+  const check = startedButNeverRead(input.draft, input.observations ?? []);
+  return {
+    gate: 'gates.backgroundRead',
+    ruleId: 'rule/read-what-you-started',
+    passed: check.ok,
+    detail: check.ok ? 'every background command that the answer relies on was read' : check.detail,
+    ...(check.ok
+      ? {}
+      : {
+          backtrack:
+            'call command_output for the job before saying what it did, or drop the claim and say it was started but never checked',
         }),
   };
 }
