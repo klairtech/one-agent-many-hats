@@ -2255,6 +2255,47 @@ async function loadConnectors() {
   v.appendChild(shell);
 }
 
+/**
+ * A gap with the button that closes it.
+ *
+ * Every one of these used to be a sentence describing a setting and the page it lives on,
+ * which is a instruction to go and do the work by hand. If the panel knows what is missing
+ * precisely enough to name it, it knows enough to offer the fix.
+ */
+function gapCard(title, detail, label, onclick) {
+  const card = st(el('section'), 'background:var(--warn-soft);border:1px solid var(--warn);border-radius:14px;padding:14px 16px;display:flex;flex-wrap:wrap;gap:11px;align-items:center');
+  const text = st(el('div'), 'flex:1;min-width:220px');
+  text.appendChild(st(el('p', 'sm', title), 'margin:0;font-weight:600'));
+  text.appendChild(st(el('p', 'xs', detail), 'margin:3px 0 0;color:var(--ink-2);text-wrap:pretty'));
+  card.appendChild(text);
+  if (label) {
+    const go = el('button', 'btn1 btnsm', label);
+    st(go, 'flex:none');
+    go.onclick = async () => {
+      go.disabled = true;
+      try { await onclick(); } catch (e) { go.disabled = false; await say('That did not work', e.message); }
+    };
+    card.appendChild(go);
+  }
+  return card;
+}
+
+/** A one-line summary that opens. For the answer to a question most people will not ask. */
+function disclosure(label) {
+  const host = st(el('div'), 'margin-top:12px');
+  const head = st(el('button', 'xs'), 'border:0;background:none;color:var(--ink-3);cursor:pointer;padding:4px 0;font-family:inherit;text-align:left');
+  const body = st(el('div'), 'display:none;padding:0 0 4px');
+  head.textContent = '› ' + label;
+  head.onclick = () => {
+    const open = body.style.display === 'block';
+    body.style.display = open ? 'none' : 'block';
+    head.textContent = (open ? '\u203a ' : '\u2304 ') + label;
+  };
+  host.appendChild(head);
+  host.appendChild(body);
+  return { host, body };
+}
+
 async function paintMcp(v) {
   v.innerHTML = '<p class="sm" style="color:var(--ink-2)">Loading…</p>';
   const d = await api('/api/connectors');
@@ -2297,8 +2338,52 @@ async function paintMcp(v) {
   wrap.appendChild(form);
 
   if (!d.networkEnabled) {
-    wrap.appendChild(el('p', 'sm callout warn')).textContent =
-      'Tool network egress is off, so a remote connector cannot be reached. Turn it on in Setup if you want cloud MCP servers.';
+    wrap.appendChild(
+      gapCard(
+        'Tool network egress is off',
+        'A remote connector cannot be reached, and neither can the web tools. Local connectors are unaffected — they run as a process on this machine.',
+        'Turn egress on',
+        async () => { await post('/api/config', { network: true }); loadState(); paintMcp(v); },
+      ),
+    );
+  }
+
+  // The catalogue: servers that were started on a real machine and completed a handshake
+  // before they were listed. Adding one is a click you make, never a default you inherit —
+  // an MCP server is someone else's code running here.
+  if ((d.catalogue || []).length) {
+    const sug = st(el('section'), 'background:var(--surface);border-radius:14px;padding:16px 18px');
+    sug.appendChild(st(el('p', 'h3', 'Known to work'), 'margin:0'));
+    sug.appendChild(st(el('p', 'xs', 'Free, no account, verified against this client. Nothing here is connected until you add it.'), 'margin:3px 0 0;color:var(--ink-3)'));
+    const list = st(el('div'), 'display:flex;flex-direction:column;gap:1px;background:var(--line);border-radius:12px;overflow:hidden;margin-top:13px');
+    d.catalogue.forEach((c) => {
+      const row = st(el('div'), 'background:var(--surface);padding:12px 14px');
+      const head = st(el('div'), 'display:flex;align-items:center;gap:9px');
+      head.appendChild(st(el('span', 'sm', c.label), 'flex:1;min-width:0'));
+      head.appendChild(st(el('span', 'xs num', 'v' + c.verified), 'color:var(--ink-3);flex:none'));
+      const add = el('button', 'btn1 btnsm', 'Add');
+      st(add, 'flex:none;padding:4px 12px;min-height:28px;font-size:12px');
+      add.onclick = async () => {
+        add.disabled = true;
+        try { await post('/api/connector', { action: 'catalogue', id: c.id }); paintMcp(v); }
+        catch (e) { add.disabled = false; await say('Could not add ' + c.id, e.message); }
+      };
+      head.appendChild(add);
+      row.appendChild(head);
+      row.appendChild(st(el('p', 'xs', c.adds), 'margin:5px 0 0;color:var(--ink-2);text-wrap:pretty'));
+      row.appendChild(st(el('p', 'xs', c.caveat), 'margin:4px 0 0;color:var(--warn);text-wrap:pretty'));
+      row.appendChild(st(el('p', 'xs mono', 'npx ' + c.args.join(' ') + '  ·  ' + c.docs), 'margin:4px 0 0;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap'));
+      list.appendChild(row);
+    });
+    sug.appendChild(list);
+    if ((d.omitted || []).length) {
+      const why = disclosure('Servers left off this list, and why');
+      d.omitted.forEach((o) => {
+        why.body.appendChild(st(el('p', 'xs', o.id + ' — ' + o.reason), 'margin:6px 0 0;color:var(--ink-3);text-wrap:pretty'));
+      });
+      sug.appendChild(why.host);
+    }
+    wrap.appendChild(sug);
   }
 
   if (!d.servers.length) {
@@ -2873,9 +2958,27 @@ async function loadRegistry() {
   // search the web" turns into a mystery.
   const notReady = r.tools.filter((t) => !t.ready.ok);
   if (notReady.length) {
-    to.appendChild(el('p', 'xs callout warn')).textContent =
-      notReady.length + ' tool(s) are present but cannot do anything yet: ' +
-      notReady.map((t) => t.name + ' (' + t.ready.why + ')').join('; ');
+    // Grouped by cause, with the fix attached.
+    //
+    // It was one sentence naming every tool and repeating the same reason after each of
+    // them — eight tools, one cause, and no way to act on it from the page that told you.
+    // Egress is one switch; the rest live on Connectors, which is one click away.
+    const byCause = {};
+    notReady.forEach((t) => { (byCause[t.ready.why] = byCause[t.ready.why] || []).push(t.name); });
+    const gaps = st(el('div'), 'display:flex;flex-direction:column;gap:10px;margin:10px 0 4px');
+    Object.keys(byCause).forEach((why) => {
+      const names = byCause[why];
+      const detail = plural(names.length, 'tool', 'tools') + ': ' + names.join(', ');
+      if (why.indexOf('egress') >= 0) {
+        gaps.appendChild(gapCard('Tool network egress is off', detail + '. Nothing reaches the network until this is on — it is off by default so a fresh install cannot call out on its own.', 'Turn egress on', async () => {
+          await post('/api/config', { network: true });
+          loadState(); loadRegistry();
+        }));
+      } else {
+        gaps.appendChild(gapCard(why, detail + '.', 'Open Connectors', async () => { go('connectors'); }));
+      }
+    });
+    to.appendChild(gaps);
   }
 
   const tul = st(el('div'), 'display:flex;flex-direction:column;gap:1px;background:var(--line);border-radius:14px;overflow:hidden;margin-top:12px');

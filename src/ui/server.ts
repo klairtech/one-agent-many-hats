@@ -39,6 +39,7 @@ import { renderMarkdown } from './markdown.js';
 import { CATALOGUE, OllamaAdmin, SUGGESTED, catalogueWithSizes, searchHuggingFace } from './models.js';
 import { collectOutputs } from './outputs.js';
 import { listGeneratedTools } from '../tools/generated/store.js';
+import { DELIBERATELY_OMITTED, MCP_CATALOGUE } from './mcp-catalogue.js';
 import { renderPage } from './page.js';
 import { catalogue, quote } from './pricing.js';
 
@@ -899,6 +900,10 @@ export async function startUi(
         const live = session.mcp.connections;
         return json(res, 200, {
           networkEnabled: session.config.network.enabled,
+          // Only what is not already set up. A catalogue that keeps offering you a server
+          // you added ten minutes ago is a list you stop reading.
+          catalogue: MCP_CATALOGUE.filter((c) => !(c.id in configured)),
+          omitted: DELIBERATELY_OMITTED,
           servers: Object.entries(configured).map(([id, cfg]) => {
             const conn = live.find((c) => c.server === id);
             return {
@@ -939,6 +944,11 @@ export async function startUi(
           const cur = servers[id];
           if (!cur) return json(res, 404, { error: 'no such connector' });
           servers[id] = { ...cur, disabled: !cur.disabled };
+        } else if (body.action === 'catalogue') {
+          const entry = MCP_CATALOGUE.find((c) => c.id === id);
+          if (!entry) return json(res, 404, { error: 'no catalogue entry with that id' });
+          if (servers[id]) return json(res, 409, { error: `a connector called ${id} already exists` });
+          servers[id] = { transport: 'stdio', command: entry.command, args: entry.args };
         } else if (body.action === 'add') {
           if (body.url) {
             // A remote connector is a third party with a network endpoint. Recorded as
