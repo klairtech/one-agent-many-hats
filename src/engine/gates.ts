@@ -11,6 +11,7 @@ import type { Artifact } from '../tools/artifacts.js';
 import { extractClaims, reconcile, type ReconcileReport } from './reconcile.js';
 import { askedInProse, completionClaimed, promisedFileNotWritten, startedButNeverRead } from './vigilance.js';
 import type { ToolObservation } from '../tools/types.js';
+import { unfinishedTasks } from '../tools/builtin/plan.js';
 
 /**
  * Every named enforcement point in this runtime, and where it actually lives.
@@ -33,6 +34,7 @@ export const ENFORCEMENT_POINTS: Record<string, string> = {
   'gates.clarificationAsked': 'src/engine/gates.ts — clarificationAsked',
   'gates.fileReallyExists': 'src/engine/gates.ts — fileReallyExists',
   'gates.backgroundRead': 'src/engine/gates.ts — backgroundRead',
+  'gates.tasksFinished': 'src/engine/gates.ts — tasksFinished',
 };
 
 export function knownEnforcementPoints(): Set<string> {
@@ -59,6 +61,8 @@ export interface VerificationInput {
   usedTools: boolean;
   /** Tool names the run could call, so a gate can tell "did not ask" from "could not ask". */
   allowlist?: string[];
+  /** Which run, so a gate can read the task list it wrote for itself. */
+  runId?: string;
 }
 
 /**
@@ -145,6 +149,7 @@ export function runVerificationGates(input: VerificationInput): GateFinding[] {
   if (input.observations) findings.push(clarificationAsked(input));
   if (input.observations) findings.push(fileReallyExists(input));
   if (input.observations) findings.push(backgroundRead(input));
+  if (input.runId) findings.push(tasksFinished(input));
   return findings;
 }
 
@@ -226,6 +231,31 @@ function backgroundRead(input: VerificationInput): GateFinding {
       : {
           backtrack:
             'call command_output for the job before saying what it did, or drop the claim and say it was started but never checked',
+        }),
+  };
+}
+
+/**
+ * rule/finish-what-you-listed. The run wrote down what it meant to do; this asks whether it
+ * did it. Unlike every other gate here it compares the answer against the *plan* rather than
+ * against the tool results, which is the only way to catch work that was never attempted —
+ * an observation list has nothing to say about a step that produced no calls at all.
+ */
+function tasksFinished(input: VerificationInput): GateFinding {
+  const open = unfinishedTasks(input.runId ?? '');
+  const passed = open.length === 0;
+  return {
+    gate: 'gates.tasksFinished',
+    ruleId: 'rule/finish-what-you-listed',
+    passed,
+    detail: passed
+      ? 'every task on the list was finished or explicitly dropped'
+      : `${open.length} task(s) from your own plan are still open: ${open.map((t) => t.title).join('; ')}`,
+    ...(passed
+      ? {}
+      : {
+          backtrack:
+            'finish them, or mark each with update_task as dropped with the reason, and say in the answer which parts were not done',
         }),
   };
 }

@@ -1,11 +1,13 @@
 ---
 id: outcome/change
 kind: outcome
-version: 7
+version: 8
 description: Make a bounded edit to files in the workspace, reproduced first and verified after.
 tools:
   - list_dir
   - read_file
+  - plan_tasks
+  - update_task
   - search_files
   - search_documents
   - write_file
