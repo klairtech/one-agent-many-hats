@@ -11,6 +11,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 
 import { HatsError } from '../core/errors.js';
+import { readTokens, refreshTokens, usableAccessToken } from './oauth.js';
 import { Logger, nullLogger } from '../core/logger.js';
 import {
   CLIENT_INFO,
@@ -247,13 +248,46 @@ export class McpClient {
         ...(this.config.headers ?? {}),
       };
       if (this.sessionId) headers['mcp-session-id'] = this.sessionId;
+      // A token we already hold. An explicit Authorization header in the config wins, so a
+      // server using a personal access token keeps working exactly as it did.
+      const bearer = usableAccessToken(this.name);
+      if (bearer && !headers['authorization']) headers['authorization'] = `Bearer ${bearer}`;
 
-      const res = await fetch(url, {
+      let res = await fetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(message),
         signal: controller.signal,
       });
+
+      // One silent refresh, then one retry. An access token that expired mid-session is the
+      // ordinary case and should not surface as a failed tool call; a refresh that does not
+      // work means the grant is gone, and that is a person's problem to fix.
+      if (res.status === 401 && readTokens(this.name)?.refreshToken) {
+        const refreshed = await refreshTokens(this.name);
+        if (refreshed) {
+          headers['authorization'] = `Bearer ${refreshed.accessToken}`;
+          res = await fetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(message),
+            signal: controller.signal,
+          });
+        }
+      }
+
+      if (res.status === 401) {
+        throw new HatsError(
+          'MCP_SIGNIN_REQUIRED',
+          `mcp ${this.name} needs you to sign in. Open Connectors and press Sign in — it opens ` +
+            `the provider in your browser, and no password comes anywhere near this process.`,
+          {
+            server: this.name,
+            url,
+            wwwAuthenticate: res.headers.get('www-authenticate') ?? null,
+          },
+        );
+      }
 
       const session = res.headers.get('mcp-session-id');
       if (session) this.sessionId = session;

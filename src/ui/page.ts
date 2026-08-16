@@ -2465,6 +2465,42 @@ async function paintMcp(v) {
     const acts = st(el('div'), 'display:flex;gap:8px;margin-top:12px');
     const toggle = el('button', 'btn3 btnsm', srv.disabled ? 'Enable' : 'Disable');
     toggle.onclick = async () => { await post('/api/connector', { action: 'toggle', id: srv.id }); paintMcp(v); };
+
+    // Signing in to a remote connector.
+    //
+    // The button opens the provider in a browser tab and nothing else: the password is typed
+    // at the provider, the code comes back to a listener that closes straight after, and the
+    // token is written to the credential file at 0600. Nothing sensitive passes through this
+    // page, which is why it can say so plainly.
+    if (srv.remote) {
+      const auth = el('button', 'btn2 btnsm', srv.signedIn ? 'Sign out' : 'Sign in');
+      auth.onclick = async () => {
+        auth.disabled = true;
+        if (srv.signedIn) {
+          if (!(await ask('Sign out of ' + srv.id + '?', 'The stored token is deleted. The connector stays configured and can be signed into again.', 'Sign out', true))) { auth.disabled = false; return; }
+          await post('/api/connector', { action: 'signout', id: srv.id });
+          paintMcp(v);
+          return;
+        }
+        try {
+          const started = await post('/api/connector', { action: 'signin', id: srv.id });
+          window.open(started.authorizeUrl, '_blank', 'noopener');
+          await say('Approve it in the tab that just opened', 'Signing in at ' + started.issuer + '. hats never sees your password — it is handed a token once you approve. This page updates when you come back.');
+          // Polled rather than pushed: the browser tab is where the work happens, and this
+          // page has no way to know it finished except by asking.
+          for (let i = 0; i < 100; i++) {
+            await new Promise((r) => setTimeout(r, 3000));
+            const st2 = await post('/api/connector', { action: 'signin-status', id: srv.id });
+            if (st2.signedIn) { await say('Signed in to ' + srv.id, 'Restart the panel to connect it and load its tools.'); break; }
+            if (!st2.waiting) break;
+          }
+        } catch (e) {
+          await say('Could not start the sign-in', e.message);
+        }
+        paintMcp(v);
+      };
+      acts.appendChild(auth);
+    }
     const rm = el('button', 'btn3 btnsm', 'Remove');
     rm.onclick = async () => {
       if (!(await ask('Remove this connector?', srv.id + ' — ' + srv.target, 'Remove', true))) return;
