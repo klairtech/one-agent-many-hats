@@ -52,7 +52,7 @@ export function permissionFlags(tool: GeneratedTool, workspaceRoot: string): str
  *              a one-off built to answer one question should not join the workspace's
  *              permanent tool list, where a later run would find it and wonder what it is.
  */
-export function generatedHandler(tool: GeneratedTool, code?: string): ToolHandler {
+export function generatedHandler(tool: GeneratedTool, code?: string, dir?: string): ToolHandler {
   return {
     spec: {
       name: tool.name,
@@ -71,7 +71,10 @@ export function generatedHandler(tool: GeneratedTool, code?: string): ToolHandle
     },
 
     async run(args, ctx): Promise<ToolResult> {
-      const source = code ?? (await readGeneratedCode(tool.name, generatedToolsDir()));
+      // Its own directory, when the loader knew one. A tool can live on the device or in
+      // the workspace, and looking only in the device directory made a workspace tool load
+      // fine at startup and fail at its first call.
+      const source = code ?? (await readGeneratedCode(tool.name, dir ? path.dirname(dir) : generatedToolsDir()));
 
       // Credentials cross into the child, never into the model. The tool named them in its
       // manifest when it was written, so the set is fixed at build time rather than chosen

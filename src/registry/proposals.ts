@@ -46,7 +46,12 @@ export interface Proposal {
    * ADR-0011: set when the agent wrote a working tool rather than a description of one.
    * Promotion installs this; without it a tool proposal is still a contract for a person.
    */
-  implementation?: { tool: import('../tools/generated/store.js').GeneratedTool; code: string };
+  implementation?: {
+    tool: import('../tools/generated/store.js').GeneratedTool;
+    code: string;
+    /** Which home it was built for. Absent means the device, which is what it always was. */
+    scope?: 'device' | 'workspace';
+  };
   /**
    * Why auto-promotion left this alone, in the words it used at the time.
    *
@@ -198,7 +203,7 @@ export async function setProposalStatus(
  */
 export async function promoteProposal(
   id: string,
-  opts: { root?: string } = {},
+  opts: { root?: string; workspaceRoot?: string } = {},
 ): Promise<{ proposal: Proposal; written?: string; manual?: string }> {
   const root = opts.root ?? registryDir();
   const proposal = await getProposal(id, root);
@@ -229,7 +234,7 @@ export async function promoteProposal(
     // ADR-0011: the proposal carries a working handler, so promotion installs it.
     if (proposal.implementation) {
       const { installGeneratedTool } = await import('../tools/generated/install.js');
-      const outcome = await installGeneratedTool(proposal.implementation);
+      const outcome = await installGeneratedTool(proposal.implementation, opts.workspaceRoot);
       if (!outcome.installed) {
         // Left a draft on purpose, same as a refused patch: a tool that did not install is
         // evidence about the tool, and marking it promoted would hide a thing that is not there.

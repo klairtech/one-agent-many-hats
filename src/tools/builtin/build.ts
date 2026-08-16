@@ -69,9 +69,9 @@ export const buildTool: ToolHandler = {
         },
         retain: {
           type: 'string',
-          enum: ['device', 'conversation'],
+          enum: ['workspace', 'device', 'conversation'],
           description:
-            'Where it lives afterwards. "device" keeps it installed for every workspace on this machine, so later runs reuse it; "conversation" makes it work now and vanish when the run ends, leaving nothing behind. Choose conversation for a one-off, device for something they will plainly reach for again — and if it is genuinely unclear, ask them with ask_user rather than deciding for them.',
+            'Where it lives afterwards. "workspace" writes it into a hats-tools folder inside the project, where it can be committed and arrives working for everyone who clones — right when the tool is part of how this project works. "device" keeps it for every workspace on this machine and nowhere else, which is right for a connector holding your own credentials. "conversation" makes it work now and vanish when the run ends, leaving nothing behind. Choose conversation for a one-off; if it is genuinely unclear between the other two, ask with ask_user rather than deciding for them.',
         },
         rationale: {
           type: 'string',
@@ -96,7 +96,8 @@ export const buildTool: ToolHandler = {
     const name = String(args['name'] ?? '').trim();
     const code = String(args['code'] ?? '');
     const rationale = String(args['rationale'] ?? '').trim();
-    const retain = args['retain'] === 'conversation' ? 'conversation' : 'device';
+    const retain =
+      args['retain'] === 'conversation' ? 'conversation' : args['retain'] === 'workspace' ? 'workspace' : 'device';
 
     const taken = [
       ...ALL_TOOLS.map((h) => h.spec.name),
@@ -150,7 +151,7 @@ export const buildTool: ToolHandler = {
       evidence: [`run:${ctx.runId}`],
       content: describe(tool),
       createdByRun: ctx.runId,
-      implementation: { tool, code },
+      implementation: { tool, code, ...(retain === 'workspace' ? { scope: 'workspace' as const } : {}) },
       ...(retain === 'conversation' ? { ephemeral: true } : {}),
     });
 
@@ -175,13 +176,20 @@ export const buildTool: ToolHandler = {
     // the gap was found, the fix was written, and the run still could not answer the
     // question. A tool that arrives after the run that needed it has not closed any loop.
     if (atLeast(ctx.config.autonomy.level, 'self-extending') && ctx.installTool) {
-      const outcome = await installGeneratedTool({ tool, code }, ctx.workspaceRoot);
+      const outcome = await installGeneratedTool(
+        { tool, code, ...(retain === 'workspace' ? { scope: 'workspace' as const } : {}) },
+        ctx.workspaceRoot,
+      );
       if (outcome.installed) {
         await setProposalStatus(proposal.id, 'promoted');
         ctx.installTool(generatedHandler(tool, code));
         return {
           summary:
-            `built and installed ${name}, kept on this device so every later run can reuse it. Callable now. Declared ` +
+            `built and installed ${name} to ${outcome.dir}. ` +
+            (retain === 'workspace'
+              ? 'It is inside the project, so it goes into your next commit and works for anyone who clones. '
+              : 'It is kept on this device, so every later run in any workspace can reuse it. ') +
+            `Callable now. Declared ` +
             `mutating: ${tool.mutating}, network: ${tool.network} — those are the permissions ` +
             `its process actually gets, so a call that needs more will fail rather than escalate.`,
           payload: { id: proposal.id, tool, installed: true },
