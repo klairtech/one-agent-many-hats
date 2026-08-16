@@ -328,6 +328,13 @@ async function runAgentInner(opts: RunOptions, runId: string, slug: string): Pro
         ts: utcStamp(),
         ...m,
         content: redactSecrets(m.content),
+        // Tool arguments travel on the assistant turn, and a credential handed to a tool
+        // lands here just as readily as one typed into the message. Redacting `content`
+        // alone left it on disk — found by planting a key and grepping the file rather
+        // than by reading this function.
+        ...(m.toolCalls
+          ? { toolCalls: JSON.parse(redactSecrets(JSON.stringify(m.toolCalls))) as typeof m.toolCalls }
+          : {}),
         ...(internal ? { internal: true } : {}),
       },
       { mode: 0o600 },
@@ -724,7 +731,11 @@ async function runAgentInner(opts: RunOptions, runId: string, slug: string): Pro
     runDir: dir,
   };
 
-  await writeJsonAtomic(path.join(dir, 'run.json'), {
+  // The whole record, not chosen fields: run.json holds the request, the answer, tool
+  // observation summaries and gate details, and any of them can carry something a person
+  // pasted. This is the file the panel reads and the one someone attaches to a bug report,
+  // so it is redacted as a unit — a field-by-field list is a thing to forget to update.
+  await writeRunRecord(path.join(dir, 'run.json'), {
     runId,
     startedAt: new Date(started).toISOString(),
     finishedAt: utcStamp(),
@@ -873,6 +884,16 @@ async function callModel(
     });
     throw e;
   }
+}
+
+/**
+ * Writes the run record with credential shapes stripped.
+ *
+ * Serialise, redact, re-parse: it costs one extra pass over a file that is written once
+ * per run, and it cannot miss a field that someone adds to the record later.
+ */
+async function writeRunRecord(file: string, record: unknown): Promise<void> {
+  await writeJsonAtomic(file, JSON.parse(redactSecrets(JSON.stringify(record))));
 }
 
 async function executeCall(
