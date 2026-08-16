@@ -111,9 +111,9 @@ export async function openSession(flags: SessionFlags = {}): Promise<Session> {
     search: (query, limit) => index.search(query, limit, pool.embedder()),
   };
 
-  // ADR-0011: whatever the agent has built for this machine, joined last so a built-in
-  // or an MCP server always wins a name collision.
-  const generated = await loadGeneratedTools([...ALL_TOOLS, ...mcp.handlers], logger);
+  // ADR-0011: whatever the agent has built — for this workspace first, then for this
+  // machine — joined last so a built-in or an MCP server always wins a name collision.
+  const generated = await loadGeneratedTools([...ALL_TOOLS, ...mcp.handlers], logger, workspaceRoot);
 
   return {
     config,

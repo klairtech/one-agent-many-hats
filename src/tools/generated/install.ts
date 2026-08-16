@@ -11,7 +11,7 @@
  * whether it is about to shadow something. So those are the checks.
  */
 
-import { generatedToolsDir } from '../../core/paths.js';
+import { generatedToolsDir, workspaceToolsDir } from '../../core/paths.js';
 import { ALL_TOOLS } from '../index.js';
 import { assertUsableName, listGeneratedTools, writeGeneratedTool, type GeneratedTool } from './store.js';
 import { smokeTest } from './verify.js';
@@ -24,15 +24,22 @@ export interface InstallOutcome {
 }
 
 export async function installGeneratedTool(
-  implementation: { tool: GeneratedTool; code: string },
+  implementation: { tool: GeneratedTool; code: string; scope?: 'device' | 'workspace' },
   workspaceRoot = process.cwd(),
 ): Promise<InstallOutcome> {
   const { tool, code } = implementation;
 
+  // Where it is going decides nothing about what it may do — the flags come from the
+  // manifest either way. It decides who else gets it: the device directory is this machine
+  // only, the workspace directory is a folder in the project that goes into a commit.
+  const scope = implementation.scope === 'workspace' ? 'workspace' : 'device';
+  const root = scope === 'workspace' ? workspaceToolsDir(workspaceRoot) : generatedToolsDir();
+
   // Re-checked at install even though build_tool checked it: a proposal can sit as a draft
-  // for days, and a built-in with the same name may have shipped in between.
-  const root = generatedToolsDir();
-  const installed = await listGeneratedTools(root);
+  // for days, and a built-in with the same name may have shipped in between. Both homes are
+  // checked whichever one is being written to, because they load into the same list.
+  const installed = [...(await listGeneratedTools(generatedToolsDir()))];
+  if (workspaceRoot) installed.push(...(await listGeneratedTools(workspaceToolsDir(workspaceRoot))));
   const taken = [
     ...ALL_TOOLS.map((h) => h.spec.name),
     ...installed.filter((g) => g.tool.name !== tool.name).map((g) => g.tool.name),
@@ -55,7 +62,9 @@ export async function installGeneratedTool(
     return {
       installed: true,
       stage: 'installed',
-      reason: `installed to ${dir}; loads under mutating: ${tool.mutating}, network: ${tool.network}`,
+      reason:
+        `installed to ${dir}; loads under mutating: ${tool.mutating}, network: ${tool.network}` +
+        (scope === 'workspace' ? '. It is inside the project, so it belongs in your next commit.' : ''),
       dir,
     };
   } catch (e) {
