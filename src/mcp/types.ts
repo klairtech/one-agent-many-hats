@@ -21,6 +21,12 @@ export interface McpServerConfig {
   /** http: the endpoint. */
   url?: string;
   headers?: Record<string, string>;
+  /**
+   * A client id issued by hand, for a provider that does not support dynamic registration.
+   * Not a secret: an OAuth client id is public by design, and PKCE is what protects the
+   * exchange — so this belongs in config rather than in the credential store.
+   */
+  oauthClientId?: string;
   /** Skip this server without deleting its config. */
   disabled?: boolean;
   /** Seconds to wait for the handshake before giving up. */

@@ -43,13 +43,189 @@ const IMAGE_TYPES: Record<string, string> = {
  * the honest output is nothing, said clearly, rather than a plausible fragment.
  */
 export function extractPdfText(buf: Buffer): { text: string; streams: number; decoded: number } {
+  const objects = indexObjects(buf);
+
+  // One map per font, keyed by the object that owns it.
+  //
+  // Merging them was the bug that made every word-processor PDF unreadable. A subset font
+  // numbers its glyphs from zero for its own use, so code 3 is "a" in one font and "%" in
+  // the next; folding twenty-six maps into one dictionary means the last font loaded wins
+  // and every other font's text is decoded through the wrong table. The output looks like
+  // text, which is what made it dangerous rather than merely wrong.
+  const cmaps = new Map<number, Map<number, string>>();
+  for (const [num, span] of objects) {
+    const head = buf.subarray(span.start, Math.min(span.end, span.start + 2_000)).toString('latin1');
+    if (!head.includes('/ToUnicode')) continue;
+    const ref = /\/ToUnicode\s+(\d+)\s+\d+\s+R/.exec(head)?.[1];
+    const target = ref ? Number(ref) : num;
+    const stream = streamOf(buf, objects.get(target));
+    if (!stream) continue;
+    const map = new Map<number, string>();
+    collectCMap(stream, map);
+    if (map.size > 0) cmaps.set(target, map);
+  }
+
+  // Which /F name means which font object, per page. The same name is reused on every page
+  // and points somewhere different each time, so this cannot be flattened either.
+  const parts: string[] = [];
+  let streams = 0;
+  let decoded = 0;
+
+  for (const [, span] of objects) {
+    const head = buf.subarray(span.start, Math.min(span.end, span.start + 4_000)).toString('latin1');
+    if (!/\/Type\s*\/Page[^s]/.test(head)) continue;
+
+    const fonts = fontsForPage(buf, objects, head, cmaps);
+    for (const contentNum of contentRefs(head)) {
+      const body = streamOf(buf, objects.get(contentNum));
+      streams++;
+      if (!body) continue;
+      decoded++;
+      if (!isContentStream(body)) continue;
+      const text = readTextOperators(body, fonts);
+      if (text.trim()) parts.push(text);
+    }
+  }
+
+  // Nothing linked up — no page objects, or a structure this does not understand. Fall back
+  // to reading every stream that looks like content, which is right for the simple PDFs a
+  // generator writes without an object graph worth the name.
+  if (parts.length === 0) {
+    const merged = new Map<number, string>();
+    for (const map of cmaps.values()) for (const [k, v] of map) if (!merged.has(k)) merged.set(k, v);
+    const scanned = scanAllStreams(buf, merged.size > 0 ? merged : undefined);
+    return { text: clean(scanned.text), streams: scanned.streams, decoded: scanned.decoded };
+  }
+
+  return { text: clean(parts.join('\n')), streams, decoded };
+}
+
+function clean(text: string): string {
+  return text.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** Every `N 0 obj ... endobj` in the file, by number. */
+function indexObjects(buf: Buffer): Map<number, { start: number; end: number }> {
+  const out = new Map<number, { start: number; end: number }>();
+  const latin = buf.toString('latin1');
+  const RE = /(\d+)\s+\d+\s+obj\b/g;
+  let m: RegExpExecArray | null;
+  const found: Array<{ num: number; at: number }> = [];
+  while ((m = RE.exec(latin))) found.push({ num: Number(m[1]), at: m.index });
+  for (let i = 0; i < found.length; i++) {
+    const here = found[i] as { num: number; at: number };
+    const next = found[i + 1];
+    // A later definition of the same number wins: that is what an incremental update means.
+    out.set(here.num, { start: here.at, end: next ? next.at : buf.length });
+  }
+  return out;
+}
+
+/** The inflated stream inside an object, or undefined if it has none we can read. */
+function streamOf(buf: Buffer, span: { start: number; end: number } | undefined): string | undefined {
+  if (!span) return undefined;
+  const slice = buf.subarray(span.start, span.end);
+  const at = slice.indexOf(Buffer.from('stream'));
+  if (at < 0) return undefined;
+  let from = at + 6;
+  if (slice[from] === 0x0d) from++;
+  if (slice[from] === 0x0a) from++;
+  const to = slice.indexOf(Buffer.from('endstream'), from);
+  const raw = slice.subarray(from, to < 0 ? slice.length : to);
+  try {
+    return inflateSync(raw).toString('latin1');
+  } catch {
+    // Uncompressed content streams are legal and common in hand-written PDFs.
+    return raw.toString('latin1');
+  }
+}
+
+/** `/Contents 5 0 R` or `/Contents [5 0 R 6 0 R]`. */
+function contentRefs(pageDict: string): number[] {
+  const single = /\/Contents\s+(\d+)\s+\d+\s+R/.exec(pageDict);
+  if (single?.[1]) return [Number(single[1])];
+  const array = /\/Contents\s*\[([^\]]*)\]/.exec(pageDict)?.[1] ?? '';
+  return [...array.matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
+}
+
+/** `/Font << /F1 12 0 R /F2 13 0 R >>` on the page, resolved to the maps those fonts own. */
+function fontsForPage(
+  buf: Buffer,
+  objects: Map<number, { start: number; end: number }>,
+  pageDict: string,
+  cmaps: Map<number, Map<number, string>>,
+): Map<string, Map<number, string>> {
+  const out = new Map<string, Map<number, string>>();
+
+  let resources = balancedDict(pageDict, '/Resources') ?? '';
+  if (!resources) {
+    // Resources can live in their own object, and often do when several pages share them.
+    const ref = /\/Resources\s+(\d+)\s+\d+\s+R/.exec(pageDict)?.[1];
+    const span = ref ? objects.get(Number(ref)) : undefined;
+    if (span) resources = buf.subarray(span.start, Math.min(span.end, span.start + 4_000)).toString('latin1');
+  }
+
+  const fontBlock = balancedDict(resources, '/Font') ?? '';
+  for (const m of fontBlock.matchAll(/\/([A-Za-z0-9+.\-]+)\s+(\d+)\s+\d+\s+R/g)) {
+    const name = m[1] as string;
+    const fontObj = Number(m[2]);
+    // The font object names its own ToUnicode; the map was indexed under whichever object
+    // actually holds the stream.
+    const head = (() => {
+      const span = objects.get(fontObj);
+      return span ? buf.subarray(span.start, Math.min(span.end, span.start + 2_000)).toString('latin1') : '';
+    })();
+    const toUnicode = /\/ToUnicode\s+(\d+)\s+\d+\s+R/.exec(head)?.[1];
+    const map = cmaps.get(toUnicode ? Number(toUnicode) : fontObj);
+    if (map) out.set(name, map);
+  }
+  return out;
+}
+
+/**
+ * The dictionary that follows a key, counting nesting.
+ *
+ * A non-greedy regex stops at the first `>>`, which for `/Resources<</Font<</F1 3 0 R>>>>`
+ * is the one closing `/Font` — so the font block was cut off exactly where the fonts were,
+ * and every page resolved to no fonts at all. Dictionaries nest; matching them needs a
+ * counter, not a pattern.
+ */
+function balancedDict(text: string, key: string): string | undefined {
+  const at = text.indexOf(key);
+  if (at < 0) return undefined;
+  const open = text.indexOf('<<', at);
+  if (open < 0) return undefined;
+  // Anything between the key and the dictionary means this is a reference, not an inline
+  // dictionary, and the caller resolves that separately.
+  if (/[^\s]/.test(text.slice(at + key.length, open))) return undefined;
+
+  let depth = 0;
+  for (let i = open; i < text.length - 1; i++) {
+    if (text[i] === '<' && text[i + 1] === '<') {
+      depth++;
+      i++;
+      continue;
+    }
+    if (text[i] === '>' && text[i + 1] === '>') {
+      depth--;
+      i++;
+      if (depth === 0) return text.slice(open + 2, i - 1);
+    }
+  }
+  return undefined;
+}
+
+/** The old whole-file sweep, kept for PDFs with no object graph to walk. */
+function scanAllStreams(
+  buf: Buffer,
+  cmap?: Map<number, string>,
+): { text: string; streams: number; decoded: number } {
   const marker = Buffer.from('stream');
   const endMarker = Buffer.from('endstream');
   const parts: string[] = [];
   let streams = 0;
   let decoded = 0;
   let at = 0;
-  const cmap = new Map<number, string>();
 
   while (at < buf.length) {
     const start = buf.indexOf(marker, at);
@@ -57,57 +233,53 @@ export function extractPdfText(buf: Buffer): { text: string; streams: number; de
     const end = buf.indexOf(endMarker, start);
     if (end < 0) break;
     streams++;
-
-    // Past "stream" and its end-of-line, which the spec allows to be CRLF or LF.
     let from = start + marker.length;
     if (buf[from] === 0x0d) from++;
     if (buf[from] === 0x0a) from++;
-
     const raw = buf.subarray(from, end);
     at = end + endMarker.length;
 
-    let body: Buffer;
+    let body: string;
     try {
-      body = inflateSync(raw);
+      body = inflateSync(raw).toString('latin1');
       decoded++;
     } catch {
-      // Not Flate, or an image stream, or encrypted. Uncompressed content streams exist and
-      // are worth trying; anything binary is rejected by isContentStream below.
-      body = raw;
+      body = raw.toString('latin1');
     }
-
-    const latin = body.toString('latin1');
-
-    // A ToUnicode CMap is how a subset font says what its glyph codes mean. Collected from
-    // every stream first, because a font's map may appear after the page that uses it.
-    if (latin.includes('beginbfchar') || latin.includes('beginbfrange')) {
-      collectCMap(latin, cmap);
-      continue;
-    }
-
-    // Only content streams. Font programs, colour profiles, XML metadata and image data all
-    // contain byte sequences that look like PDF strings, and the first version of this
-    // returned several kilobytes of font tables as though they were the document.
-    if (!isContentStream(latin)) continue;
-
-    const text = readTextOperators(latin);
+    if (body.includes('beginbfchar') || body.includes('beginbfrange')) continue;
+    if (!isContentStream(body)) continue;
+    const fonts = cmap ? new Map([['*', cmap]]) : new Map<string, Map<number, string>>();
+    const text = readTextOperators(body, fonts);
     if (text.trim()) parts.push(text);
   }
-
-  const joined = parts.join('\n');
-  const mapped = cmap.size > 0 ? applyCMap(joined, cmap) : joined;
-  return {
-    text: mapped.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim(),
-    streams,
-    decoded,
-  };
+  return { text: parts.join('\n'), streams, decoded };
 }
 
-/** The operand side of Tj/TJ/'/" — literal `(...)` strings and hex `<...>` strings. */
-function readTextOperators(content: string): string {
+/**
+ * The operand side of Tj/TJ/'/" — literal `(...)` strings and hex `<...>` strings.
+ *
+ * `fonts` maps the resource name a `Tf` selects to that font's own glyph table, and the
+ * table in force changes as the stream switches fonts. Decoding at the point of extraction
+ * rather than afterwards is the whole correction: once the runs are concatenated there is
+ * no way to know which table each character came from.
+ */
+function readTextOperators(content: string, fonts: Map<string, Map<number, string>>): string {
   const out: string[] = [];
   let i = 0;
   let line = '';
+  // The wildcard entry is the fallback sweep's single merged table; a real page always names
+  // its fonts.
+  let active: Map<number, string> | undefined = fonts.get('*');
+
+  const decode = (raw: string): string => {
+    if (!active) return raw;
+    let s = '';
+    for (let k = 0; k < raw.length; k++) {
+      const mapped = active.get(raw.charCodeAt(k));
+      s += mapped !== undefined ? mapped : raw[k];
+    }
+    return s;
+  };
 
   const literal = (): string => {
     // Starts on the '('. PDF strings nest parentheses and escape with backslash, so this
@@ -151,8 +323,8 @@ function readTextOperators(content: string): string {
     const digits = content.slice(i + 1, close).replace(/[^0-9a-fA-F]/g, '');
     i = close + 1;
     let s = '';
-    // Two digits per byte for simple fonts; four for the identity-encoded ones, where the
-    // high byte is almost always zero and dropping it recovers ASCII.
+    // Two digits per byte for simple fonts; four for the identity-encoded ones, whose codes
+    // are two bytes wide and are looked up in the font's table rather than read as ASCII.
     const step = digits.length % 4 === 0 && digits.length > 2 ? 4 : 2;
     for (let k = 0; k + step <= digits.length; k += step) {
       const code = parseInt(digits.slice(k, k + step), 16);
@@ -163,12 +335,27 @@ function readTextOperators(content: string): string {
 
   while (i < content.length) {
     const c = content[i] as string;
+
+    // `/F3 11 Tf` selects a font. Everything drawn after it uses that font's table, and
+    // reading the name here is what keeps twenty-six subsets apart.
+    if (c === '/' && fonts.size > 0) {
+      const m = /^\/([A-Za-z0-9+.\-]+)\s+[\d.]+\s+Tf/.exec(content.slice(i, i + 60));
+      if (m?.[1]) {
+        const chosen = fonts.get(m[1]);
+        // A font with no table of its own is standard-encoded, and its bytes are already
+        // characters — keeping the previous font's table would corrupt them.
+        active = chosen;
+        i += m[0].length;
+        continue;
+      }
+    }
+
     if (c === '(') {
-      line += literal();
+      line += decode(literal());
       continue;
     }
     if (c === '<' && content[i + 1] !== '<') {
-      line += hex();
+      line += decode(hex());
       continue;
     }
     // Td, TD, T* and ' all move to a new line. Treating them as line breaks is the whole of
@@ -297,7 +484,7 @@ export const readPdf: ToolHandler = {
   spec: {
     name: 'read_pdf',
     description:
-      'Extract the text of a PDF in the workspace. Returns the text it can recover with the page count, and says so plainly when it recovers nothing — a scanned PDF is images of text and contains no text to find. Reading order follows the order the generator wrote the glyphs, which is right for ordinary prose and unreliable for multi-column layouts and tables.',
+      'Extract the text of a PDF in the workspace, including one written by a word processor with embedded subset fonts. Returns the text with the page count, and says so plainly when it recovers nothing — a scanned PDF is images of text and contains no text to find. Reading order follows the order the generator wrote the glyphs, which is right for ordinary prose and unreliable for multi-column layouts and tables.',
     parameters: {
       type: 'object',
       properties: {

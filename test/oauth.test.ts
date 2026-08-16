@@ -285,3 +285,34 @@ test('discovery reports every path it tried when there is no metadata', async ()
     await cleanup(home);
   }
 });
+
+/**
+ * The catalogue is a set of promises about addresses, and a promise nobody checks decays.
+ * This does not reach the network — it asserts the shape, so an entry cannot be added
+ * without the fields that make it honest.
+ */
+test('every catalogue entry says what it is, what it costs you, and what was verified', async () => {
+  const { MCP_CATALOGUE, DELIBERATELY_OMITTED } = await import('../src/ui/mcp-catalogue.js');
+  const ids = new Set<string>();
+
+  for (const entry of MCP_CATALOGUE) {
+    assert.ok(entry.id && !ids.has(entry.id), `duplicate or missing id: ${entry.id}`);
+    ids.add(entry.id);
+    assert.ok(entry.adds.length > 30, `${entry.id} does not say what it adds`);
+    assert.ok(entry.caveat.length > 30, `${entry.id} has no caveat — every entry has one`);
+    assert.ok(entry.verified.length > 0, `${entry.id} records no verification`);
+    assert.match(entry.docs, /^https:\/\//, `${entry.id} has no documentation link`);
+
+    // Exactly one shape: a command to run, or an endpoint to reach.
+    const local = Boolean(entry.command);
+    const remote = Boolean(entry.url);
+    assert.notEqual(local, remote, `${entry.id} must be either local or remote, not both or neither`);
+    if (remote) assert.match(entry.url as string, /^https:\/\//, `${entry.id} must be https`);
+    if (entry.signIn) assert.ok(remote, `${entry.id} cannot sign in without being remote`);
+  }
+
+  for (const omitted of DELIBERATELY_OMITTED) {
+    assert.ok(omitted.reason.length > 40, `${omitted.id} is omitted without a reason worth reading`);
+    assert.ok(!ids.has(omitted.id), `${omitted.id} is both listed and omitted`);
+  }
+});
