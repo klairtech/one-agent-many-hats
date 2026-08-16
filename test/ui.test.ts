@@ -348,17 +348,29 @@ test('a run that produced nothing is skipped, and a corrupt record does not take
     await fsp.mkdir(broken, { recursive: true });
     await fsp.writeFile(path.join(broken, 'run.json'), '{ not json');
 
+    // Producing means writing. A run that only read a file has evidence, not output — the
+    // distinction the whole view turns on.
+    const read = path.join(runs, '20260816T091000Z-eeeeee');
+    await fsp.mkdir(path.join(read, 'artifacts'), { recursive: true });
+    await fsp.writeFile(
+      path.join(read, 'run.json'),
+      JSON.stringify({ request: 'just read it', startedAt: '2026-08-16T09:10:00Z', ok: true, observations: [{ tool: 'read_file', artifactId: 'art_r', ok: true, summary: 'read 40 rows' }] }),
+    );
+    await fsp.writeFile(path.join(read, 'artifacts', 'art_r.json'), JSON.stringify({ payload: { lines: 40 } }));
+
     const good = path.join(runs, '20260816T093000Z-dddddd');
     await fsp.mkdir(path.join(good, 'artifacts'), { recursive: true });
     await fsp.writeFile(
       path.join(good, 'run.json'),
-      JSON.stringify({ request: 'count them', startedAt: '2026-08-16T09:30:00Z', ok: true, observations: [{ tool: 'read_file', artifactId: 'art_1', ok: true, summary: 'read 40 rows' }] }),
+      JSON.stringify({ request: 'count them', startedAt: '2026-08-16T09:30:00Z', ok: true, observations: [{ tool: 'write_file', artifactId: 'art_1', ok: true, summary: 'wrote it' }] }),
     );
+    await fsp.writeFile(path.join(good, 'artifacts', 'art_1.json'), JSON.stringify({ payload: { path: 'reports/counts.md' } }));
 
     const produced = await collectOutputs(runs);
-    assert.equal(produced.runs.length, 1, 'only the run that produced something belongs here');
+    assert.equal(produced.runs.length, 1, 'only the run that wrote a file belongs here');
     assert.equal(produced.runs[0]?.request, 'count them');
-    assert.equal(produced.total, 3, 'the count on disk is what the panel reports, not what it shows');
+    assert.deepEqual(produced.runs[0]?.files, ['reports/counts.md']);
+    assert.equal(produced.total, 4, 'the count on disk is what the panel reports, not what it shows');
   } finally {
     await cleanup(home);
   }
@@ -384,8 +396,12 @@ test('a conversation that produced something is not buried by later ones that di
         request: 'the report from January',
         startedAt: '2026-01-01T00:00:00Z',
         ok: true,
-        observations: [{ tool: 'read_file', artifactId: 'art_old', ok: true, summary: 'read the source' }],
+        observations: [{ tool: 'write_file', artifactId: 'art_old', ok: true, summary: 'wrote the report' }],
       }),
+    );
+    await fsp.writeFile(
+      path.join(old, 'artifacts', 'art_old.json'),
+      JSON.stringify({ payload: { path: 'reports/january.md' } }),
     );
 
     // Then a stack of newer conversations that only ever talked.
@@ -437,8 +453,12 @@ test('conversations that produced nothing do not push real outputs off the page'
         path.join(dir, 'run.json'),
         JSON.stringify({ request: id, startedAt: '2026-08-16T00:00:00Z', ok: true, observations }),
       );
+      await fsp.writeFile(
+        path.join(dir, 'artifacts', 'art_1.json'),
+        JSON.stringify({ payload: { path: `out/${id}.md` } }),
+      );
     };
-    const produced = [{ tool: 'read_file', artifactId: 'art_1', ok: true, summary: 'read it' }];
+    const produced = [{ tool: 'write_file', artifactId: 'art_1', ok: true, summary: 'wrote it' }];
     await write('20260816T090000Z-aaaaaa', produced);
     await write('20260816T090100Z-bbbbbb', produced);
     await write('20260816T090200Z-cccccc', []);

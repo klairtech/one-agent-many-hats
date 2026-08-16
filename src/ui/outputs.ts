@@ -109,7 +109,12 @@ export async function collectOutputs(
       if (typeof written === 'string' && written && !files.includes(written)) files.push(written);
     }
 
-    if (artifacts.length === 0 && files.length === 0) continue;
+    // Files only. Artifacts are *evidence* — a directory listing, a fetched page, a value
+    // computed in the sandbox — and listing them here made Outputs a second copy of every
+    // run's internals: a read_file sat in the same place as a deliverable, so the view
+    // could not answer the question it is named after. Evidence stays in the conversation,
+    // next to the citation that points at it.
+    if (files.length === 0) continue;
     runs.push({
       runId: id,
       request: String(record['request'] ?? ''),
