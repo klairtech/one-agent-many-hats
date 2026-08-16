@@ -60,6 +60,37 @@ test('a PDF with an uncompressed content stream gives its text back', () => {
   assert.equal(looksGarbled(out.text), false);
 });
 
+/**
+ * The bug that made every word-processor PDF unreadable.
+ *
+ * A subset font numbers its glyphs from zero for its own use, so code 1 is "A" in one font
+ * and "X" in the next. An earlier version merged every ToUnicode map in the file into one
+ * dictionary, so the last font loaded decoded everybody's text. The output was text-shaped
+ * and wrong, which is worse than an error.
+ */
+test('two fonts with conflicting glyph codes are decoded by their own maps', () => {
+  const cmap = (pairs: Array<[string, string]>) =>
+    `/CIDInit /ProcSet findresource begin 1 beginbfchar\n` +
+    pairs.map(([code, ch]) => `<${code}> <${ch}>`).join('\n') +
+    `\nendbfchar end`;
+
+  // Font A: 0001 -> H, 0002 -> I.  Font B: the same codes -> N, O.
+  const objs = [
+    `1 0 obj<</Type/Page/Resources<</Font<</F1 3 0 R/F2 5 0 R>>>>/Contents 7 0 R>>endobj`,
+    `3 0 obj<</Type/Font/ToUnicode 4 0 R>>endobj`,
+    `4 0 obj<</Length 1>>\nstream\n${cmap([['0001', '0048'], ['0002', '0049']])}\nendstream endobj`,
+    `5 0 obj<</Type/Font/ToUnicode 6 0 R>>endobj`,
+    `6 0 obj<</Length 1>>\nstream\n${cmap([['0001', '004E'], ['0002', '004F']])}\nendstream endobj`,
+    `7 0 obj<</Length 1>>\nstream\nBT /F1 12 Tf <00010002> Tj /F2 12 Tf <00010002> Tj ET\nendstream endobj`,
+  ];
+  const pdf = Buffer.from(`%PDF-1.4\n${objs.join('\n')}\n%%EOF\n`, 'latin1');
+
+  const out = extractPdfText(pdf).text;
+  assert.match(out, /HI/, 'the first font decoded through the wrong table');
+  assert.match(out, /NO/, 'the second font decoded through the wrong table');
+  assert.ok(!/HIHI|NONO/.test(out), `one font's map was applied to both runs: ${out}`);
+});
+
 test('a font program is not mistaken for the document', () => {
   // A stream of binary with no text operators: this is what leaked into the first version,
   // several kilobytes of font tables presented as the contents of the file.

@@ -2415,13 +2415,13 @@ async function paintMcp(v) {
   if ((d.catalogue || []).length) {
     const sug = st(el('section'), 'background:var(--surface);border-radius:14px;padding:16px 18px');
     sug.appendChild(st(el('p', 'h3', 'Known to work'), 'margin:0'));
-    sug.appendChild(st(el('p', 'xs', 'Free, no account, verified against this client. Nothing here is connected until you add it.'), 'margin:3px 0 0;color:var(--ink-3)'));
+    sug.appendChild(st(el('p', 'xs', 'Each address was checked from this machine against this client. Nothing is connected until you add it, and the ones marked sign in send you to the provider — no password comes near this app.'), 'margin:3px 0 0;color:var(--ink-3)'));
     const list = st(el('div'), 'display:flex;flex-direction:column;gap:1px;background:var(--line);border-radius:12px;overflow:hidden;margin-top:13px');
     d.catalogue.forEach((c) => {
       const row = st(el('div'), 'background:var(--surface);padding:12px 14px');
       const head = st(el('div'), 'display:flex;align-items:center;gap:9px');
       head.appendChild(st(el('span', 'sm', c.label), 'flex:1;min-width:0'));
-      head.appendChild(st(el('span', 'xs num', 'v' + c.verified), 'color:var(--ink-3);flex:none'));
+      if (c.signIn) head.appendChild(statusPill('sign in', 'warn'));
       const add = el('button', 'btn1 btnsm', 'Add');
       st(add, 'flex:none;padding:4px 12px;min-height:28px;font-size:12px');
       add.onclick = async () => {
@@ -2433,7 +2433,9 @@ async function paintMcp(v) {
       row.appendChild(head);
       row.appendChild(st(el('p', 'xs', c.adds), 'margin:5px 0 0;color:var(--ink-2);text-wrap:pretty'));
       row.appendChild(st(el('p', 'xs', c.caveat), 'margin:4px 0 0;color:var(--warn);text-wrap:pretty'));
-      row.appendChild(st(el('p', 'xs mono', 'npx ' + c.args.join(' ') + '  ·  ' + c.docs), 'margin:4px 0 0;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap'));
+      const target = c.url ? c.url : c.command + ' ' + (c.args || []).join(' ');
+      row.appendChild(st(el('p', 'xs mono', target + '  ·  ' + c.docs), 'margin:4px 0 0;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap'));
+      row.appendChild(st(el('p', 'xs', 'Verified here: ' + c.verified), 'margin:3px 0 0;color:var(--ink-3)'));
       list.appendChild(row);
     });
     sug.appendChild(list);

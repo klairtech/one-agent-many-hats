@@ -958,7 +958,13 @@ export async function startUi(
           }
           // The panel never sees a code, a verifier or a token. It gets a URL to open and a
           // promise that settles when the provider redirects back to the loopback listener.
-          const pending = await prepareSignIn({ server: id, url: cfg.url });
+          // A provider without dynamic registration needs a client id created by hand. Passing
+          // it here is the difference between "this cannot work" and "this needs one setting".
+          const pending = await prepareSignIn({
+            server: id,
+            url: cfg.url,
+            ...(cfg.oauthClientId ? { clientId: cfg.oauthClientId } : {}),
+          });
           signIns.set(id, pending);
           void pending.completed
             .then(() => signIns.delete(id))
@@ -980,7 +986,9 @@ export async function startUi(
           const entry = MCP_CATALOGUE.find((c) => c.id === id);
           if (!entry) return json(res, 404, { error: 'no catalogue entry with that id' });
           if (servers[id]) return json(res, 409, { error: `a connector called ${id} already exists` });
-          servers[id] = { transport: 'stdio', command: entry.command, args: entry.args };
+          servers[id] = entry.url
+            ? { transport: 'http', url: entry.url }
+            : { transport: 'stdio', command: entry.command as string, args: entry.args ?? [] };
         } else if (body.action === 'add') {
           if (body.url) {
             // A remote connector is a third party with a network endpoint. Recorded as
