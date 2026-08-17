@@ -714,6 +714,10 @@ function renderRun() {
     input.placeholder = ASK_DEFAULT;
     inner.innerHTML = '';
     renderIdle();
+    // The server holds its own copy of the conversation, separate from what is on screen —
+    // clearing the thread here used to look reset and behave like the old one was still
+    // talking, because nothing told the server to forget it.
+    post('/api/run', { request: '', fresh: true }).catch(() => {});
   });
 
   const bound = STATE && (STATE.tiers.standard || STATE.tiers.light || STATE.tiers.frontier);
