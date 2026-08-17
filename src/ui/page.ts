@@ -78,6 +78,8 @@ svg{display:block;flex:none}
 .fld:focus{border-color:var(--brand)}
 input[type=checkbox],input[type=radio]{width:17px;height:17px;accent-color:var(--brand);flex:none;cursor:pointer;margin-top:2px}
 @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes livepulse{0%,100%{opacity:.25}50%{opacity:1}}
+@media (prefers-reduced-motion: reduce){[style*="livepulse"]{animation:none!important;opacity:.7}}
 @keyframes pop{from{opacity:0;transform:translateY(6px) scale(.99)}to{opacity:1;transform:none}}
 @keyframes fade{from{opacity:0}to{opacity:1}}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -1410,9 +1412,16 @@ async function runInChat(request, opts) {
   // the question and the answer, which is the one thing anybody scrolled here to read.
   // What is genuinely worth knowing after the fact lives in the footer, and the detail is
   // one click away in the trace.
-  const status = st(el('span', 'xs'), 'color:var(--ink-3)');
-  status.textContent = 'working';
+  const status = st(el('span', 'xs'), 'display:inline-flex;align-items:center;gap:7px;color:var(--ink-3);min-width:0;max-width:100%');
+  const pulse = st(el('span'), 'flex:none;width:6px;height:6px;border-radius:50%;background:var(--brand);animation:livepulse 1.1s ease-in-out infinite');
+  const statusText = st(el('span'), 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0');
+  statusText.textContent = 'working';
+  status.appendChild(pulse);
+  status.appendChild(statusText);
   body.appendChild(status);
+
+  /** The one live line. Long tool calls are clipped rather than wrapped, so it stays one row. */
+  const live = (text) => { statusText.textContent = text.length > 110 ? text.slice(0, 109) + '…' : text; };
 
   const trace = st(el('div'), 'margin:10px 0 0;display:none;flex-direction:column;gap:3px');
   const answer = st(el('div', 'md'), 'margin:10px 0 0');
@@ -1431,9 +1440,34 @@ async function runInChat(request, opts) {
 
   source.addEventListener('event', (m) => {
     const ev = JSON.parse(m.data);
-    if (ev.type === 'stage') { const to = String(ev.message).split('->').pop().trim(); addStage(to, 'idle'); }
-    if (ev.type === 'step') { const s = String(ev.message).split('·')[1]; if (s) addStage(s.trim(), 'idle'); status.textContent = String(ev.message).split('·')[0].trim(); }
-    if (ev.type === 'gate') { status.textContent = 'gate blocked'; }
+    if (ev.type === 'stage') { const to = String(ev.message).split('->').pop().trim(); addStage(to, 'idle'); live(to); }
+    if (ev.type === 'step') { const s = String(ev.message).split('·')[1]; if (s) addStage(s.trim(), 'idle'); live(String(ev.message).split('·')[0].trim()); }
+    if (ev.type === 'gate') { live('gate blocked — ' + String(ev.message)); }
+    if (ev.type === 'note') { live(String(ev.message)); }
+
+    // What it is doing, while it is doing it.
+    //
+    // Every tool call already emits its name and arguments, and the result after it — and
+    // all of it went into a trace that is display:none until you go looking. So a run that
+    // read eleven files and wrote a tool showed the word "working" for two minutes and then
+    // an answer. The events were always there; nothing was reading them out.
+    if (ev.type === 'tool' && ev.data) {
+      const text = String(ev.message);
+      if (text.trim().startsWith('->')) {
+        // Trimmed with slices rather than a regex. This file is one long template literal,
+        // so a \s in a pattern arrives as a literal "s" and the strip silently does nothing
+        // — which is exactly how the line first read "read_file — -> ok [art_…]".
+        let detail = text.trim().slice(2).trim();
+        if (detail.slice(0, 2) === 'ok') detail = detail.slice(2).trim();
+        if (detail.charAt(0) === '[') {
+          const close = detail.indexOf(']');
+          if (close > 0) detail = detail.slice(close + 1).trim();
+        }
+        live(ev.data.tool + (ev.data.ok ? (detail ? ' — ' + detail : ' — done') : ' — denied'));
+      } else {
+        live(text);
+      }
+    }
 
     // Code the agent wrote and ran gets a card in the conversation, not a line in the
     // trace. It is the one tool whose *input* is the interesting part: everything else

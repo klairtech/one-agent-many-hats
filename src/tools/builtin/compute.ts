@@ -165,6 +165,8 @@ function pickNumbers(payload: unknown, field: string): number[] {
     const nums = target.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
     if (nums.length > 0) return nums;
     // An array of objects with the field name repeated inside, e.g. entries[].size
+    // Only attempt property extraction if a field was actually specified.
+    if (!field) return [];
     const leaf = field.split('.').pop() ?? '';
     const inner = target
       .map((v) => (v && typeof v === 'object' ? (v as Record<string, unknown>)[leaf] : undefined))

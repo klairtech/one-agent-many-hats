@@ -386,3 +386,84 @@ test('neither home can shadow a built-in', async () => {
     await cleanup(home);
   }
 });
+
+/**
+ * The package shelf.
+ *
+ * A handler is loaded from a `data:` URL, which has no directory to resolve a bare
+ * specifier against — so `import 'pg'` could never work and every connector needing a real
+ * driver was unbuildable. That was an accident of the loader, not a safety property. What
+ * *is* a safety property is that a person installs the packages: `npm install` executes
+ * code from the registry at install time, so an agent that could install its own
+ * dependencies would have a way to run anything at all.
+ */
+test('a generated tool imports from the shelf, and cannot reach past it', async () => {
+  const home = await tempHome();
+  try {
+    const { toolDepsDir } = await import('../src/core/paths.js');
+    const shelf = toolDepsDir();
+    const pkg = path.join(shelf, 'node_modules', 'demo-pkg');
+    await fsp.mkdir(pkg, { recursive: true });
+    await fsp.writeFile(path.join(shelf, 'package.json'), '{"name":"hats-tool-deps","private":true}');
+    await fsp.writeFile(
+      path.join(pkg, 'package.json'),
+      '{"name":"demo-pkg","version":"1.0.0","type":"module","main":"index.js"}',
+    );
+    await fsp.writeFile(path.join(pkg, 'index.js'), 'export const answer = 42;\n');
+
+    const { shelfPackages } = await import('../src/tools/generated/handler.js');
+    assert.deepEqual(shelfPackages(), ['demo-pkg'], 'the shelf did not report what is on it');
+
+    const onShelf = await generatedHandler(
+      tool({ name: 'uses_shelf' }),
+      'export async function run(a, ctx){ const m = await ctx.import("demo-pkg"); return { summary: "got " + m.answer }; }',
+    ).run({}, ctx(home));
+    assert.match(onShelf.summary, /got 42/, `a shelf package failed to import: ${onShelf.summary}`);
+
+    // Not on the shelf: refused, and the message says what *is* there rather than only that
+    // this one is missing.
+    const offShelf = await generatedHandler(
+      tool({ name: 'wants_more' }),
+      'export async function run(a, ctx){ await ctx.import("definitely-not-installed"); return { summary: "x" }; }',
+    ).run({}, ctx(home));
+    assert.equal(offShelf.failed, true);
+    assert.match(offShelf.summary, /not on the package shelf/);
+    assert.match(offShelf.summary, /demo-pkg/, 'the error should list what is installed');
+  } finally {
+    await cleanup(home);
+  }
+});
+
+/** The shelf is a read grant. A tool must not be able to leave something on it. */
+test('a tool cannot write to the shelf, whatever it declared', async () => {
+  const home = await tempHome();
+  // A workspace of its own, as in real use. Pointing the workspace at the hats home would
+  // put the shelf *inside* the workspace, and a mutating tool's workspace grant would then
+  // legitimately cover it — that is the "your home directory is the workspace" hazard the
+  // README warns about, not something this grant can fix.
+  const ws = await fsp.mkdtemp(path.join(await fsp.realpath(process.env['TMPDIR'] ?? '/tmp'), 'hats-shelf-ws-'));
+  try {
+    const { toolDepsDir } = await import('../src/core/paths.js');
+    await fsp.mkdir(path.join(toolDepsDir(), 'node_modules'), { recursive: true });
+    const planted = path.join(toolDepsDir(), 'node_modules', 'planted.js');
+
+    const result = await generatedHandler(
+      tool({ name: 'plants_a_package', mutating: true }),
+      `export async function run(a, ctx){
+         const fs = await ctx.import('node:fs');
+         fs.writeFileSync(${JSON.stringify(planted)}, 'x');
+         return { summary: 'planted' };
+       }`,
+    ).run({}, ctx(ws));
+
+    assert.notEqual(result.failed, undefined, 'writing to the shelf should not succeed');
+    assert.equal(
+      await fsp.stat(planted).then(() => true).catch(() => false),
+      false,
+      'a tool wrote into the package shelf',
+    );
+  } finally {
+    await fsp.rm(ws, { recursive: true, force: true });
+    await cleanup(home);
+  }
+});

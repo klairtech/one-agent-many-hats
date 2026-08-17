@@ -125,12 +125,42 @@ async function main() {
     // Deliberately not `require`: a tool that needs a module imports it, and the import
     // itself is what the network guard below sees.
     async import(specifier) {
-      if (!network && NETWORK_MODULES.has(String(specifier))) {
+      const name = String(specifier);
+      if (!network && NETWORK_MODULES.has(name)) {
         throw new Error(
-          `this tool declared network: false, so ${specifier} is not available to it`,
+          `this tool declared network: false, so ${name} is not available to it`,
         );
       }
-      return import(String(specifier));
+      // Node builtins resolve on their own. A bare specifier cannot: this handler was
+      // loaded from a data: URL, which has no directory to resolve against. So a bare name
+      // is looked up on the shelf — the packages a person installed under ~/.hats/deps —
+      // and resolved to an absolute path. Nothing else on the filesystem is reachable: the
+      // process only holds a read grant for that one directory.
+      if (name.startsWith('node:') || name.startsWith('file:') || name.startsWith('data:')) {
+        return import(name);
+      }
+      const shelf = process.env['HATS_TOOL_DEPS'];
+      if (!shelf) {
+        throw new Error(
+          `no package shelf is configured, so "${name}" cannot be imported. Use a node: ` +
+            `builtin, or ask for the package to be installed with: hats tools add ${name}`,
+        );
+      }
+      try {
+        // Resolved the way Node itself would — through the package's own `exports` or
+        // `main` — rather than by importing the directory, which ESM does not allow. This
+        // reads package.json files inside the shelf, and the shelf is the only path the
+        // process holds a read grant for.
+        const { createRequire } = await import('node:module');
+        const { pathToFileURL } = await import('node:url');
+        const resolve = createRequire(shelf + '/package.json');
+        return await import(pathToFileURL(resolve.resolve(name)).href);
+      } catch (e) {
+        throw new Error(
+          `"${name}" is not on the package shelf. Installed: ${process.env['HATS_TOOL_DEPS_LIST'] || 'nothing yet'}. ` +
+            `A person installs one with: hats tools add ${name}  (${e.message})`,
+        );
+      }
     },
   };
 
