@@ -316,8 +316,8 @@ function locatorScript(target: string, action: string): string {
   // are different jobs: a CSS selector is case-sensitive (#myId, [data-testId]) and
   // lowercasing it finds nothing, while a visible name is matched by what a person would
   // read and needs its case and its stray whitespace flattened.
-  const raw = JSON.stringify(target);
-  const t = JSON.stringify(String(target).trim().toLowerCase().replace(/\s+/g, ' '));
+  const asSelector = JSON.stringify(target);
+  const asVisibleName = JSON.stringify(String(target).trim().toLowerCase().replace(/\s+/g, ' '));
   // Typing needs somewhere to type. Wikipedia has a <button> and an <input> both labelled
   // "Search Wikipedia"; the button matched first, the text went nowhere, Enter did nothing,
   // and the run reported success three times while achieving nothing.
@@ -331,14 +331,14 @@ function locatorScript(target: string, action: string): string {
     // out with a tab arrives with a tab. Collapsing every run of whitespace to one space on
     // both sides is what makes "Search  Wikipedia" match "Search Wikipedia".
     const norm=(s)=>String(s).trim().toLowerCase().replace(/\\s+/g,' ');
-    const want=${t};
+    const want=${asVisibleName};
     // Rendered, but not necessarily in the viewport — this scrolls the match into view a
     // moment later, so demanding it already be on screen only made the locator reject
     // things browser_read had just offered as available. [Seen in a live run, 2026-08-14.]
     const vis=(e)=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0;};
     let el=null;
     const canType=(e)=>['input','textarea','select'].includes(e.tagName.toLowerCase())||e.isContentEditable;
-    try{ const bySel=document.querySelector(${raw}); if(bySel&&vis(bySel)&&(!typable||canType(bySel))) el=bySel; }catch(e){}
+    try{ const bySel=document.querySelector(${asSelector}); if(bySel&&vis(bySel)&&(!typable||canType(bySel))) el=bySel; }catch(e){}
     if(!el){
       const cands=[];
       const SEL=${JSON.stringify(candidateSelector)};

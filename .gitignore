@@ -12,5 +12,6 @@ CLAUDE.md
 docs/
 .claude/
 
-# Working papers and internal documents. The repo is code; the writing stays local.
+# Drafts and internal documents stay local. The published paper is the exception: it is
+# what the code implements, so the PDF is tracked deliberately and its sources are not.
 *.docx

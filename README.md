@@ -19,9 +19,10 @@ passing messages. I tried that. It did not hold. Coordination cost grew faster t
 capability, and when an answer came out wrong, finding out which agent decided what meant
 reading an unauditable message trail.
 
-I wrote up what replaced it as a working paper, *One Agent, Many Hats*. **Klair Labs** is
-where we build the small thing that proves an idea before it becomes a product. This is the
-paper, as something you can run on your laptop tonight.
+I wrote up what replaced it as a working paper,
+[*One Agent, Many Hats*](https://sandeepkavety.com/writing/one-agent-many-hats). **Klair
+Labs** is where we build the small thing that proves an idea before it becomes a product.
+This is the paper, as something you can run on your laptop tonight.
 
 Sandeep Kavety,
 [LinkedIn](https://www.linkedin.com/in/sandeepkavety/)
@@ -555,7 +556,8 @@ can be captured, and put the boundaries where its output is not consulted.
 
 ## If you want to read it rather than run it
 
-The working paper in the repo root is the argument this implements.
+[The working paper](https://sandeepkavety.com/writing/one-agent-many-hats) is the argument
+this implements. The PDF is in the repo root too, so it travels with the code.
 
 There are 273 tests and they run in a couple of seconds without touching the network,
 because the whole engine can run against a scripted model. The sandbox isolation claims are
