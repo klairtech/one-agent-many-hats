@@ -120,6 +120,21 @@ function repairRequest(tool: string, evidence: string): string {
   ].join('\n');
 }
 
+/**
+ * A message list is only safe to open on if it does not begin mid tool-call.
+ *
+ * A `tool` role message is a result; its `tool_use` lives in the assistant message before
+ * it. Slicing to the last N messages can cut that pairing exactly at the boundary, and the
+ * provider refuses the whole request rather than the one turn. Everything after index 0 is
+ * left alone — an assistant message that *opens* a tool call is fine to lead with, because
+ * trimming only ever removes from the front, so its own results are still behind it.
+ */
+export function dropOrphanedToolResults(messages: Message[]): Message[] {
+  let start = 0;
+  while (start < messages.length && messages[start]?.role === 'tool') start++;
+  return messages.slice(start);
+}
+
 /** The only files /brand/ will ever serve. A fixed list, not a path lookup. */
 const BRAND_FILES = [
   'klair-logo-dark.png',
@@ -447,6 +462,17 @@ export async function startUi(
           fresh?: boolean;
           attach?: string[];
         };
+        // Checked before the empty-request rejection below. A "start fresh" click sends an
+        // empty request purely to reset this server's history, and the check used to run
+        // second — so the request 400'd on emptiness and the reset code was never reached.
+        // The conversation the client called "new" kept talking with the old one's history,
+        // including raw tool messages, and the next real send could open on an orphaned
+        // tool_result with no tool_use in front of it: exactly the 400 Anthropic gives back.
+        if (body.fresh) {
+          history = [];
+          if (!(body.request ?? '').trim()) return json(res, 200, { ok: true, reset: true });
+        }
+
         let request = (body.request ?? '').trim();
         if (!request) return json(res, 400, { error: 'EMPTY', message: 'nothing to run' });
 
@@ -471,7 +497,6 @@ export async function startUi(
             named.map((n) => `- ${n}`).join('\n');
         }
 
-        if (body.fresh) history = [];
         const live = startRun(request);
         return json(res, 200, { runId: live.runId });
       }
@@ -1273,7 +1298,11 @@ export async function startUi(
         runs.set(pendingId, live);
         live.result = result;
         runs.set(result.runId, live);
-        history = result.messages.slice(-40);
+        // Trimmed to the tail, then walked forward past any leading tool_result — a slice
+        // that starts mid tool-call sends the provider a tool_result with no matching
+        // tool_use in front of it, which is refused outright. Everything after position 0 is
+        // untouched, so a message that opens a tool call still carries its own results.
+        history = dropOrphanedToolResults(result.messages.slice(-40));
 
         await session.memory
           .distill({

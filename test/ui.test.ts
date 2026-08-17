@@ -556,3 +556,50 @@ test('the chat stream installs an error handler, so a dead stream cannot hang on
   assert.match(page, /readyState/, 'a transient reconnect must be told apart from a closed stream');
   assert.match(page, /Lost the connection to this run/, 'a dead stream should say so in the thread');
 });
+
+/**
+ * A conversation the model can safely resume — never opening on a tool_result whose
+ * tool_use was trimmed out from in front of it.
+ *
+ * Anthropic pairs a `tool_use` block in one assistant turn with a `tool_result` in the
+ * next; slicing a message list to its last N entries can cut exactly between the two, and
+ * the provider refuses the whole request rather than the one turn. This was a live 400:
+ * `unexpected tool_use_id found in tool_result blocks … no corresponding tool_use`.
+ */
+test('trimmed history never opens on an orphaned tool result', async () => {
+  interface Msg { role: string; content: string; toolCallId?: string; toolCalls?: unknown[] }
+  const { dropOrphanedToolResults } = (await import('../src/ui/server.js')) as unknown as {
+    dropOrphanedToolResults: (m: Msg[]) => Msg[];
+  };
+
+  const paired: Msg[] = [
+    { role: 'assistant', content: '' },
+    { role: 'tool', content: 'result A', toolCallId: 'a' },
+    { role: 'user', content: 'thanks' },
+  ];
+  // A slice landing mid pair: the assistant's tool_use is gone, only the result remains.
+  const orphaned = dropOrphanedToolResults(paired.slice(1));
+  assert.equal(orphaned[0]?.role, 'user', `still opens on a tool result: ${JSON.stringify(orphaned[0])}`);
+  assert.deepEqual(orphaned, [paired[2]]);
+
+  // Two results in a row — both belong to messages already cut, both must go.
+  const doublyOrphaned = dropOrphanedToolResults([
+    { role: 'tool', content: 'a', toolCallId: 'a' },
+    { role: 'tool', content: 'b', toolCallId: 'b' },
+    { role: 'assistant', content: 'done' },
+  ]);
+  assert.equal(doublyOrphaned.length, 1);
+  assert.equal(doublyOrphaned[0]?.role, 'assistant');
+
+  // Nothing to fix: unchanged, not just equal — the common case must not reallocate oddly.
+  const clean: Msg[] = [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' }];
+  assert.deepEqual(dropOrphanedToolResults(clean), clean);
+
+  // An assistant message that *opens* a tool call is fine to lead with: trimming only ever
+  // removes from the front, so its own results are still behind it, untouched.
+  const opensACall: Msg[] = [
+    { role: 'assistant', content: '', toolCalls: [{ id: 'x' }] },
+    { role: 'tool', content: 'result', toolCallId: 'x' },
+  ];
+  assert.deepEqual(dropOrphanedToolResults(opensACall), opensACall);
+});
