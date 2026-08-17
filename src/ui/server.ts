@@ -31,7 +31,7 @@ import { mineProposals } from '../engine/mine.js';
 import { runAgent, type RunEvent, type RunResult } from '../engine/run.js';
 import { ProviderPool } from '../providers/index.js';
 import type { Message } from '../providers/types.js';
-import { getProposal, listProposals, promoteProposal, setProposalStatus } from '../registry/proposals.js';
+import { getProposal, listProposals, noteRepairStarted, promoteProposal, setProposalStatus } from '../registry/proposals.js';
 import type { ApprovalRequest, ClarificationRequest } from '../tools/types.js';
 import type { Session } from '../cli/session.js';
 import { listDirectory, preview, readRaw, revealInFolder } from './files.js';
@@ -643,6 +643,9 @@ export async function startUi(
           // The panel attaches to this run and streams it into the conversation, so the
           // request goes back with the id — the transcript should say what was asked.
           const live = startRun(request);
+          // Recorded now, not when the run finishes: the press of the button is what makes
+          // this report stop asking for a decision, whatever the run goes on to conclude.
+          await noteRepairStarted(proposal.id, live.runId);
           return json(res, 200, { runId: live.runId, request });
         }
         return json(res, 200, { proposal: await getProposal(body.id) });

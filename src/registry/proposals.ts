@@ -66,6 +66,16 @@ export interface Proposal {
    */
   defect?: { tool: string };
   /**
+   * When a repair run was last started from this defect, and which run it was.
+   *
+   * A defect report is a request for work, and the moment somebody presses Repair it stops
+   * being one — but nothing recorded that, so it sat in "Ready to apply" demanding a
+   * decision that had already been made, and the miner kept re-staging it. Recorded rather
+   * than deleted: an attempt that produced nothing is worth seeing, and worth retrying.
+   */
+  repairStartedAt?: string;
+  repairRunId?: string;
+  /**
    * ADR-0011: the author asked for this to live only as long as the conversation.
    *
    * The implementation is still recorded, so a person can adopt it later with
@@ -168,6 +178,51 @@ export async function getProposal(id: string, root = registryDir()): Promise<Pro
   return found;
 }
 
+/**
+ * Mark a defect as having had a repair started against it.
+ *
+ * Deliberately not a status change: the proposal is still a draft, still promotable, and
+ * still there to read. What changes is that it no longer asks for a decision nobody needs
+ * to make twice.
+ */
+export async function noteRepairStarted(
+  id: string,
+  runId: string,
+  root = registryDir(),
+): Promise<void> {
+  const p = await getProposal(id, root).catch(() => null);
+  if (!p) return;
+  await writeJsonAtomic(proposalPath(p.kind, p.id, root), {
+    ...p,
+    repairStartedAt: utcStamp(),
+    repairRunId: runId,
+    updatedAt: utcStamp(),
+  });
+}
+
+/**
+ * Close the defects a promoted patch answers.
+ *
+ * Matched on the tool's name appearing in the patch's own reason, because that is the one
+ * link the two records genuinely share — a patch names a *file*, a defect names a *tool*,
+ * and one file holds several tools. The reason is written by the run that read the handler,
+ * so if it does not mention the tool it was repairing, leaving the report open is the right
+ * outcome anyway.
+ */
+export async function closeDefectsFixedBy(
+  patch: { reason: string },
+  root = registryDir(),
+): Promise<string[]> {
+  const closed: string[] = [];
+  for (const p of await listProposals(root)) {
+    if (p.status !== 'draft' || !p.defect) continue;
+    if (!patch.reason.includes(p.defect.tool)) continue;
+    await setProposalStatus(p.id, 'promoted', root);
+    closed.push(p.id);
+  }
+  return closed;
+}
+
 /** Records why automation declined, without changing the proposal's status. */
 export async function noteBlocked(
   id: string,
@@ -228,7 +283,13 @@ export async function promoteProposal(
         );
       }
       await setProposalStatus(id, 'promoted', root);
-      return { proposal, written: proposal.patch.file };
+      // The report that asked for this is answered now. Leaving it open is how the same
+      // defect gets repaired twice.
+      const closed = await closeDefectsFixedBy(proposal.patch, root);
+      return {
+        proposal,
+        written: proposal.patch.file + (closed.length ? ` (closed ${closed.length} defect report(s))` : ''),
+      };
     }
 
     // ADR-0011: the proposal carries a working handler, so promotion installs it.

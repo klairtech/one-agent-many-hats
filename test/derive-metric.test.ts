@@ -203,7 +203,58 @@ test('derive_metric: mean operation', async () => {
   );
 
   assert.ok(!result.failed, result.summary);
-  const payload = result.payload as { value: number; formula: string };
-  assert.equal(payload.value, 20);
+    const payload = result.payload as { value: number; formula: string };
+    assert.equal(payload.value, 20);
+    await cleanup(ws, home);
+  });
+
+test('derive_metric: rejects input with neither artifact_id nor literal (schema validation)', async () => {
+  const { ctx, ws, home } = await makeCtx();
+
+  try {
+    await deriveMetric.run(
+      {
+        operation: 'sum',
+        inputs: [{}],
+        label: 'invalid input',
+      },
+      ctx,
+    );
+    assert.fail('should have thrown an error for input with neither artifact_id nor literal');
+  } catch (e) {
+    const err = e as { code?: string; message?: string };
+    assert.equal(err.code, 'TOOL_INPUT_INVALID');
+    assert.match(err.message ?? '', /artifact_id|literal/i);
+  }
   await cleanup(ws, home);
+});
+
+/**
+ * The failure the defect report actually kept recording.
+ *
+ * "holds no number" is true and unusable — it does not say whether the artifact was the
+ * wrong one, the field name was wrong, or the number sits one level deeper. Runs retried
+ * the same call with the same id, so the message was creating the loop it reported.
+ */
+test('derive_metric says what the artifact does hold', async () => {
+  const { ctx, artifacts, ws, home } = await makeCtx();
+  try {
+    const a = await artifacts.put({
+      kind: 'tool-result',
+      tool: 'search_files',
+      summary: 'matches',
+      payload: [{ file: 'a.ts', line: 3, text: 'hello' }],
+    });
+    const err = await deriveMetric.run({ operation: 'sum', inputs: [{ artifact_id: a.id }] }, ctx).then(
+      () => null,
+      (e: Error) => e,
+    );
+    assert.ok(err, 'an artifact with no numbers should fail');
+    // The point: it names the fields that are there, so the next call can pick one.
+    assert.match(err.message, /array of 1 object/);
+    assert.match(err.message, /file, line, text/);
+    assert.match(err.message, /Name the field/);
+  } finally {
+    await cleanup(home, ws);
+  }
 });
