@@ -417,23 +417,17 @@ export const applyPatch: ToolHandler = {
       throw new HatsError('TOOL_FAILED', `no such file: ${args['path']}`, { file });
     });
 
-    const occurrences = countOccurrences(raw, find);
-    if (occurrences === 0) {
-      throw new HatsError(
-        'TOOL_FAILED',
-        `the find text does not appear in ${args['path']}. Read the file again — it is not what you expected.`,
-        { file },
-      );
-    }
-    if (occurrences > 1) {
-      throw new HatsError(
-        'TOOL_FAILED',
-        `the find text appears ${occurrences} times in ${args['path']}; include more surrounding context so it is unique.`,
-        { file, occurrences },
-      );
+    // The same locator the repair path uses: exact first, then tolerant of indentation, then
+    // of typography. This used to be a bare string match, so a model that retyped an
+    // em-dash as a hyphen — which is what reading rendered text and writing plain text
+    // does — got "the find text does not appear" against a file where it plainly did.
+    const { locate } = await import('../../registry/patches.js');
+    const located = locate(raw, find, replace);
+    if (located.error) {
+      throw new HatsError('TOOL_FAILED', `${located.error} (${args['path']})`, { file });
     }
 
-    await fsp.writeFile(file, raw.replace(find, replace), 'utf8');
+    await fsp.writeFile(file, located.next as string, 'utf8');
     const rel = path.relative(ctx.workspaceRoot, file);
     return {
       summary: `patched ${rel} (${find.length} bytes -> ${replace.length} bytes)`,

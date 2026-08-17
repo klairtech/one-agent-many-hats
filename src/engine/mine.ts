@@ -256,6 +256,13 @@ const STOP = new Set([
   'the', 'a', 'an', 'and', 'or', 'of', 'in', 'on', 'for', 'to', 'from', 'by', 'with', 'this',
   'that', 'is', 'are', 'was', 'were', 'be', 'it', 'its', 'me', 'my', 'you', 'your', 'what',
   'which', 'how', 'give', 'show', 'tell', 'get', 'please', 'all', 'any', 'each', 'per',
+  // Words that describe *asking*, not the subject being asked about. A trigger list of
+  // `many, number, files, just, packs` matched almost every question anyone typed, so one
+  // mined skill captured the routing for unrelated work. A trigger has to be about the
+  // domain; these never are.
+  'many', 'much', 'number', 'count', 'just', 'only', 'find', 'list', 'read', 'write', 'make',
+  'need', 'want', 'can', 'could', 'would', 'should', 'does', 'did', 'have', 'has', 'there',
+  'here', 'file', 'files', 'thing', 'things', 'answer', 'question', 'cite', 'using', 'use',
 ]);
 
 function tokens(text: string): Set<string> {
@@ -340,6 +347,37 @@ function toolContract(label: string, descriptors: string[]): string {
   ].join('\n');
 }
 
+/**
+ * The tools a mined skill starts with.
+ *
+ * Inherited from the generic outcome those runs were routed to, never a fixed subset.
+ * A hardcoded list looked harmless and was the opposite: the mined skill captured requests
+ * that used to reach `outcome/answer`, and handed them a *narrower* allowlist than the one
+ * they had before — so promoting it silently removed capability from the exact work it was
+ * supposed to get better at. A specialisation refines the prose, not the permissions.
+ * [Seen live: a skill mined from one question denied run_command, read_playbook and
+ * apply_patch to everything its triggers caught.]
+ */
+const MINED_SKILL_TOOLS = [
+  'list_dir',
+  'read_file',
+  'read_pdf',
+  'read_image',
+  'search_files',
+  'search_documents',
+  'plan_tasks',
+  'update_task',
+  'run_command',
+  'command_output',
+  'stop_command',
+  'derive_metric',
+  'sandbox_run',
+  'check_consistency',
+  'recall_memory',
+  'ask_user',
+  'read_playbook',
+];
+
 /** A skill proposal is a real skill document, so promotion can be a file copy. */
 function skillDraft(label: string, examples: string[]): string {
   const id = `outcome/${slugify(label)}`;
@@ -355,14 +393,7 @@ function skillDraft(label: string, examples: string[]): string {
     `description: ${oneLine(label)}`,
     ...(triggers.length >= 2 ? ['triggers:', ...triggers.map((t) => `  - ${t}`)] : []),
     'tools:',
-    '  - list_dir',
-    '  - read_file',
-    '  - search_files',
-    '  - search_documents',
-    '  - derive_metric',
-    '  - sandbox_run',
-    '  - check_consistency',
-    '  - recall_memory',
+    ...MINED_SKILL_TOOLS.map((t) => `  - ${t}`),
     'step_budget: 16',
     'deterministic_seed: false',
     'stages:',

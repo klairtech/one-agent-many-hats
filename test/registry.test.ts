@@ -189,3 +189,28 @@ test('sync ships a newer playbook over an installed one and leaves an equal one 
     await cleanup(home);
   }
 });
+
+/**
+ * A patch that fails only on punctuation.
+ *
+ * A model reads rendered text and writes plain text, so an em-dash comes back as a hyphen
+ * and a curly quote as a straight one. This codebase's comments are full of both, and one
+ * repair run burned fifteen apply_patch calls on it — every one reporting "the find text
+ * does not appear" about a file where it plainly did.
+ */
+test('a find text retyped with plain punctuation still locates', async () => {
+  const { locate, normaliseTypography } = await import('../src/registry/patches.js');
+  const source = 'const a = 1; // scoped to the workspace — never wider\nconst b = 2;\n';
+
+  const hit = locate(source, 'scoped to the workspace - never wider', 'scoped to the workspace - narrower');
+  assert.equal(hit.error, undefined, `an em-dash mismatch was not tolerated: ${hit.error}`);
+  assert.match(hit.next as string, /narrower/);
+
+  // Same-width substitutions only, so an index into the normalised text is the same index
+  // in the original — which is what makes the replacement land on the untouched bytes.
+  assert.equal(normaliseTypography('a—b').length, 'a—b'.length);
+  assert.equal(normaliseTypography('“x”'), '"x"');
+
+  // Genuinely absent text is still absent.
+  assert.match(locate(source, 'not in this file at all', 'x').error ?? '', /does not appear/);
+});

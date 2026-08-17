@@ -66,13 +66,26 @@ export const deriveMetric: ToolHandler = {
     const values: number[] = [];
     const sources: Array<Record<string, unknown>> = [];
 
-    for (const input of inputs) {
+    for (const [index, input] of inputs.entries()) {
       if (typeof input['literal'] === 'number') {
         values.push(input['literal']);
         sources.push({ literal: input['literal'], sourced: false });
         continue;
       }
+      // Neither an artifact nor a literal. The schema cannot express "one of these two"
+      // in the subset we validate, so an input with neither is well-formed and then fails
+      // deep inside with `no artifact ""` — which reads as a missing artifact rather than
+      // as a malformed input, and sent runs looking for an id that was never the problem.
       const id = String(input['artifact_id'] ?? '');
+      if (!id) {
+        throw new HatsError(
+          'TOOL_INPUT_INVALID',
+          `input ${index + 1} has neither artifact_id nor literal. Give artifact_id to read a ` +
+            `number out of something a tool already produced, or literal for a constant that ` +
+            `genuinely is not from data.`,
+          { index },
+        );
+      }
       const artifact = await ctx.artifacts.get(id);
       if (!artifact) {
         throw new HatsError(
