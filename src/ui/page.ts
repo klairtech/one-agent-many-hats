@@ -1454,6 +1454,26 @@ async function runInChat(request, opts) {
 
   source.addEventListener('ask', (m) => renderAsk(runId, JSON.parse(m.data), body));
 
+  // A stream that dies must say so.
+  //
+  // There was no error handler at all, so any failure — the run id not resolving, the panel
+  // restarting, a dropped connection — left the word "working" on screen forever with the
+  // run either finished or gone. EventSource also fires this on its own reconnect attempts,
+  // which are normal and recoverable, so only a closed stream is treated as the end.
+  source.onerror = () => {
+    if (source && source.readyState !== 2) return; // 2 = CLOSED
+    source = null;
+    busy = false;
+    const btn = $('#send');
+    if (btn) btn.disabled = false;
+    if (status.isConnected) {
+      status.remove();
+      answer.textContent =
+        'Lost the connection to this run. It may still be going — open it from Past conversations to see how it ended.';
+      answer.appendChild(messageFooter({ text: answer.textContent, tone: 'warn', label: 'disconnected' }));
+    }
+  };
+
   source.addEventListener('done', (m) => {
     const data = JSON.parse(m.data);
     source.close(); source = null;
