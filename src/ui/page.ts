@@ -450,8 +450,16 @@ window.addEventListener('popstate', () => {
  */
 const subTabState = {};
 
-/** Can a person do anything with this proposal beyond reading or rejecting it? */
+/**
+ * Can a person do anything with this proposal beyond reading or rejecting it?
+ *
+ * A defect that has already had a repair started against it is not waiting on anybody. It
+ * used to sit in "Ready to apply" for ever, asking again for a decision that was made the
+ * moment somebody pressed the button — and the patch it produced arrived as a *separate*
+ * row, so the list grew two entries per defect and never shrank.
+ */
 function actionable(x) {
+  if (x.defect && x.repairStartedAt) return false;
   return Boolean(x.defect) || Boolean(x.patch) || Boolean(x.implementation) || x.kind !== 'tool';
 }
 

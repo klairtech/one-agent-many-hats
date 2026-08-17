@@ -214,3 +214,54 @@ test('a find text retyped with plain punctuation still locates', async () => {
   // Genuinely absent text is still absent.
   assert.match(locate(source, 'not in this file at all', 'x').error ?? '', /does not appear/);
 });
+
+/**
+ * A defect report stops asking once somebody has acted on it.
+ *
+ * The report and the patch it produces are two separate proposals, and nothing linked them:
+ * pressing Repair left the report sitting in "Ready to apply" for ever, so the list grew two
+ * rows per defect and the miner kept re-staging the one that was already handled.
+ */
+test('a repaired defect leaves the queue, and a promoted patch closes it', async () => {
+  const home = await tempHome();
+  try {
+    const { stageProposal, noteRepairStarted, closeDefectsFixedBy, getProposal, listProposals } =
+      await import('../src/registry/proposals.js');
+
+    const defect = await stageProposal({
+      kind: 'tool',
+      title: 'derive_metric keeps failing the same way',
+      rationale: 'it failed four times',
+      evidence: ['run:1'],
+      content: '# derive_metric is failing',
+      defect: { tool: 'derive_metric' },
+    });
+    assert.equal((await getProposal(defect.id)).repairStartedAt, undefined);
+
+    await noteRepairStarted(defect.id, 'run_repair');
+    const attempted = await getProposal(defect.id);
+    assert.ok(attempted.repairStartedAt, 'the attempt was not recorded');
+    assert.equal(attempted.repairRunId, 'run_repair');
+    assert.equal(attempted.status, 'draft', 'it is still a draft — recorded, not decided');
+
+    // A patch whose reason names the tool answers the report.
+    const closed = await closeDefectsFixedBy({ reason: 'derive_metric rejected a valid input' });
+    assert.deepEqual(closed, [defect.id]);
+    assert.equal((await getProposal(defect.id)).status, 'promoted');
+
+    // A patch about something else leaves other reports alone.
+    const other = await stageProposal({
+      kind: 'tool',
+      title: 'browser_act keeps failing the same way',
+      rationale: 'x',
+      evidence: ['run:2'],
+      content: '# browser_act',
+      defect: { tool: 'browser_act' },
+    });
+    assert.deepEqual(await closeDefectsFixedBy({ reason: 'unrelated wording' }), []);
+    assert.equal((await getProposal(other.id)).status, 'draft');
+    assert.ok((await listProposals()).length >= 2);
+  } finally {
+    await cleanup(home);
+  }
+});

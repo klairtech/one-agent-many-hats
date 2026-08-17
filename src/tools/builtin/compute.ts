@@ -97,9 +97,19 @@ export const deriveMetric: ToolHandler = {
       const field = input['field'] === undefined ? '' : String(input['field']);
       const picked = pickNumbers(artifact.payload, field);
       if (picked.length === 0) {
+        // Say what is actually in there.
+        //
+        // "holds no number" is true and unusable: it does not say whether the artifact was
+        // the wrong one, the field was the wrong name, or the number is one level deeper.
+        // Runs retried the same call with the same id, which is the failure this message
+        // was creating rather than reporting.
         throw new HatsError(
           'TOOL_INPUT_INVALID',
-          `artifact ${id}${field ? ` field "${field}"` : ''} holds no number`,
+          `artifact ${id}${field ? ` field "${field}"` : ''} holds no number. ` +
+            `It contains ${describeShape(artifact.payload)}. ` +
+            (field
+              ? `Check the field name, or omit field to use the payload itself.`
+              : `Name the field that holds the number with "field", or use a different artifact.`),
           { id, field },
         );
       }
@@ -170,6 +180,26 @@ export const checkConsistency: ToolHandler = {
     };
   },
 };
+
+/** Enough of the shape to choose a different artifact or a different field. */
+function describeShape(payload: unknown): string {
+  if (payload === null || payload === undefined) return 'nothing';
+  if (typeof payload === 'string') return `text (${payload.length} characters)`;
+  if (typeof payload === 'number') return `the number ${payload}`;
+  if (Array.isArray(payload)) {
+    if (payload.length === 0) return 'an empty array';
+    const first = payload[0];
+    const keys = first && typeof first === 'object' ? Object.keys(first as object).slice(0, 8) : [];
+    return keys.length
+      ? `an array of ${payload.length} object(s) with fields: ${keys.join(', ')}`
+      : `an array of ${payload.length} ${typeof first} value(s)`;
+  }
+  if (typeof payload === 'object') {
+    const keys = Object.keys(payload as object).slice(0, 10);
+    return keys.length ? `an object with fields: ${keys.join(', ')}` : 'an empty object';
+  }
+  return typeof payload;
+}
 
 function pickNumbers(payload: unknown, field: string): number[] {
   const target = field ? getPath(payload, field) : payload;

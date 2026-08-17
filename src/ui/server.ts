@@ -31,7 +31,7 @@ import { mineProposals } from '../engine/mine.js';
 import { runAgent, type RunEvent, type RunResult } from '../engine/run.js';
 import { ProviderPool } from '../providers/index.js';
 import type { Message } from '../providers/types.js';
-import { getProposal, listProposals, promoteProposal, setProposalStatus } from '../registry/proposals.js';
+import { getProposal, listProposals, noteRepairStarted, promoteProposal, setProposalStatus } from '../registry/proposals.js';
 import type { ApprovalRequest, ClarificationRequest } from '../tools/types.js';
 import type { Session } from '../cli/session.js';
 import { listDirectory, preview, readRaw, revealInFolder } from './files.js';
@@ -95,6 +95,29 @@ function toolReadiness(name: string, session: Session): { ok: boolean; why: stri
     return { ok: true, why: 'uses a local whisper binary, or a provider endpoint' };
   }
   return { ok: true, why: '' };
+}
+
+/**
+ * What a repair run is asked to do. One text, whether a person pressed the button or the
+ * autonomy level decided — two wordings would drift, and the difference would be invisible
+ * until one of them started producing worse patches than the other.
+ */
+function repairRequest(tool: string, evidence: string): string {
+  return [
+    `The tool \`${tool}\` keeps failing the same way and it is costing every run that uses it.`,
+    '',
+    'Read its handler under src/tools/builtin/, work out why, and call propose_patch with a fix.',
+    'You may change what the tool does; you may not change what it is allowed to do, and an',
+    'attempt to edit mutating, network or minProfile is refused. The patch applies only if the',
+    'build and the entire test suite pass, so propose the fix you believe in.',
+    '',
+    'If the handler looks correct and the model keeps misusing it, the defect is the tool',
+    'description — patch that instead, and say so.',
+    '',
+    '## The evidence',
+    '',
+    evidence,
+  ].join('\n');
 }
 
 /** The only files /brand/ will ever serve. A fixed list, not a path lookup. */
@@ -625,24 +648,13 @@ export async function startUi(
           const proposal = await getProposal(body.id);
           const tool = proposal.defect?.tool;
           if (!tool) return json(res, 400, { error: 'NOT_A_DEFECT', message: 'that proposal is not a tool defect' });
-          const request = [
-              `The tool \`${tool}\` keeps failing the same way and it is costing every run that uses it.`,
-              '',
-              'Read its handler under src/tools/builtin/, work out why, and call propose_patch with a fix.',
-              'You may change what the tool does; you may not change what it is allowed to do, and an',
-              'attempt to edit mutating, network or minProfile is refused. The patch applies only if the',
-              'build and the entire test suite pass, so propose the fix you believe in.',
-              '',
-              'If the handler looks correct and the model keeps misusing it, the defect is the tool',
-              'description — patch that instead, and say so.',
-              '',
-              '## The evidence',
-              '',
-              proposal.content,
-            ].join('\n');
+          const request = repairRequest(tool, proposal.content);
           // The panel attaches to this run and streams it into the conversation, so the
           // request goes back with the id — the transcript should say what was asked.
-          const live = startRun(request);
+          const live = startRun(request, true);
+          // Recorded now, not when the run finishes: the press of the button is what makes
+          // this report stop asking for a decision, whatever the run goes on to conclude.
+          await noteRepairStarted(proposal.id, live.runId);
           return json(res, 200, { runId: live.runId, request });
         }
         return json(res, 200, { proposal: await getProposal(body.id) });
@@ -1206,7 +1218,13 @@ export async function startUi(
     }
   }
 
-  function startRun(request: string): LiveRun {
+  /**
+   * @param isRepair  A repair run must not queue more repairs when it finishes. Without
+   *                  this the first broken tool starts a run, whose own failures stage a
+   *                  defect, which starts another run — a loop that costs money and never
+   *                  reaches a person.
+   */
+  function startRun(request: string, isRepair = false): LiveRun {
     const live: LiveRun = {
       runId: `pending_${randomBytes(6).toString('hex')}`,
       events: [],
@@ -1284,6 +1302,21 @@ export async function startUi(
         if (announcement) {
           session.registry = await reloadRegistry();
           emit({ type: 'note', message: announcement });
+        }
+
+        // The agent decides to repair a tool nobody asked it to repair.
+        //
+        // One at a time, and never from inside a repair: the autonomy level says whether to
+        // do this at all, `repairStartedAt` makes each report a one-shot, and the patch it
+        // produces still only lands if the build and the entire test suite pass.
+        const nextRepair = !isRepair ? promotion?.repairs?.[0] : undefined;
+        if (nextRepair?.defect) {
+          const repair = startRun(repairRequest(nextRepair.defect.tool, nextRepair.content), true);
+          await noteRepairStarted(nextRepair.id, repair.runId);
+          emit({
+            type: 'note',
+            message: `started repairing ${nextRepair.defect.tool} on its own — watch it in Chat, or in Conversations if this one has closed`,
+          });
         }
       } catch (e) {
         live.error = toHatsError(e).message;
