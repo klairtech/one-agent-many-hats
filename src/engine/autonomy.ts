@@ -33,13 +33,21 @@ export interface AutoPromotion {
   blocked: Proposal[];
   /** Why something was refused, in words the panel can show without re-deriving them. */
   notes: Array<{ id: string; detail: string }>;
+  /**
+   * Defect reports this machine's autonomy level says to repair without being asked.
+   *
+   * Returned rather than acted on, because a repair is a *run* and this function has no
+   * model. The caller that owns run-starting decides — which also keeps the recursion
+   * obvious: a repair run must not queue more repairs from inside itself.
+   */
+  repairs: Proposal[];
 }
 
 export async function runAutoPromotion(
   config: HatsConfig,
   logger: Logger = nullLogger,
 ): Promise<AutoPromotion> {
-  const result: AutoPromotion = { promoted: [], waiting: [], blocked: [], notes: [] };
+  const result: AutoPromotion = { promoted: [], waiting: [], blocked: [], notes: [], repairs: [] };
   const drafts = (await listProposals()).filter((p) => p.status === 'draft');
   const level = config.autonomy.level;
 
@@ -76,6 +84,22 @@ export async function runAutoPromotion(
         await attempt(proposal);
         continue;
       }
+      // A defect report is not a contract, and telling someone to write a handler for a
+      // tool that already exists is nonsense. At self-healing and above the agent repairs
+      // it without being asked; below that it waits for a person to press the button.
+      if (proposal.defect) {
+        if (proposal.repairStartedAt) {
+          result.blocked.push(proposal);
+          await note(proposal, `a repair was already attempted on ${proposal.repairStartedAt.slice(0, 10)}`);
+        } else if (atLeast(level, 'self-healing')) {
+          result.repairs.push(proposal);
+        } else {
+          result.blocked.push(proposal);
+          await note(proposal, `${proposal.defect.tool} keeps failing; press Repair, or raise autonomy to self-healing to have it attempted for you`);
+        }
+        continue;
+      }
+
       // A contract with no handler still needs someone to write one.
       result.blocked.push(proposal);
       await note(proposal, 'describes a tool but carries no handler — build_tool writes one that can install');
@@ -148,7 +172,18 @@ export async function runAutoPromotion(
 
 /** One line the human sees when the system extended itself. Never silent. */
 export function describePromotion(result: AutoPromotion): string {
-  if (result.promoted.length === 0) return '';
-  const names = result.promoted.map((p) => `${p.proposal.kind} “${p.proposal.title}”`).join(', ');
-  return `self-extended: promoted ${names}. Review with \`hats registry\`; revert by editing or archiving the file.`;
+  const lines: string[] = [];
+  if (result.promoted.length > 0) {
+    const names = result.promoted.map((p) => `${p.proposal.kind} “${p.proposal.title}”`).join(', ');
+    lines.push(
+      `self-extended: promoted ${names}. Review with \`hats registry\`; revert by editing or archiving the file.`,
+    );
+  }
+  if (result.repairs.length > 0) {
+    lines.push(
+      `repairing ${result.repairs.map((p) => p.defect?.tool ?? p.title).join(', ')} without being asked — ` +
+        `the patch applies only if the build and the whole test suite pass.`,
+    );
+  }
+  return lines.join('\n');
 }

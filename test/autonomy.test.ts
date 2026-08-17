@@ -131,3 +131,49 @@ test('local providers get no price rather than a wrong one', () => {
 test('an unknown model returns nothing rather than a guess', () => {
   assert.equal(quote(CATALOGUE, 'openai', 'gpt-does-not-exist'), null);
 });
+
+/**
+ * The agent deciding to repair a tool nobody asked it to repair.
+ *
+ * The decision is returned rather than acted on: a repair is a *run*, and this function has
+ * no model. That separation is also what keeps the recursion visible — a repair run must
+ * not queue more repairs from inside itself, and the caller is the only place that knows
+ * whether it is one.
+ */
+test('a defect is repaired unasked at self-healing, once, and never below it', async () => {
+  const home = await tempHome();
+  try {
+    const { stageProposal, noteRepairStarted } = await import('../src/registry/proposals.js');
+    const defect = await stageProposal({
+      kind: 'tool',
+      title: 'derive_metric keeps failing the same way',
+      rationale: 'four runs',
+      evidence: ['run:1'],
+      content: '# derive_metric is failing',
+      defect: { tool: 'derive_metric' },
+    });
+
+    const at = (level: string) =>
+      runAutoPromotion({ ...testConfig(), autonomy: { level, promoteAfterOccurrences: 3, announce: true } } as never);
+
+    // Below the rung: it waits for a person, and says how to change that.
+    const supervised = await at('supervised');
+    assert.deepEqual(supervised.repairs, []);
+    assert.match(
+      supervised.notes.find((n) => n.id === defect.id)?.detail ?? '',
+      /press Repair, or raise autonomy to self-healing/,
+    );
+
+    // At the rung: the agent decides to do it.
+    const healing = await at('self-healing');
+    assert.deepEqual(healing.repairs.map((p) => p.id), [defect.id]);
+
+    // Once. The record of the attempt is what stops it looping.
+    await noteRepairStarted(defect.id, 'run_auto');
+    const again = await at('self-healing');
+    assert.deepEqual(again.repairs, [], 'a defect was queued for repair twice');
+    assert.match(again.notes.find((n) => n.id === defect.id)?.detail ?? '', /already attempted/);
+  } finally {
+    await cleanup(home);
+  }
+});
