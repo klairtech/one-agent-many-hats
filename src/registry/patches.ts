@@ -185,6 +185,15 @@ export async function applyPatch(patch: Patch, opts: ApplyOptions = {}): Promise
  * first real patch the agent wrote was correct in every character except six spaces.
  * [Seen in a live run, 2026-08-14.]
  */
+/** Same-width substitutions only: every replacement is one character for one character. */
+export function normaliseTypography(text: string): string {
+  return text
+    .replace(/[\u2010-\u2015]/g, '-')
+    .replace(/[\u2018\u2019\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201F]/g, '"')
+    .replace(/\u00a0/g, ' ');
+}
+
 export function locate(
   source: string,
   find: string,
@@ -193,6 +202,23 @@ export function locate(
   const exact = source.split(find).length - 1;
   if (exact === 1) return { next: source.replace(find, replace) };
   if (exact > 1) return { error: `the find text appears ${exact} times; it must be unique` };
+
+  // Typography, before giving up.
+  //
+  // A model retypes an em-dash as a hyphen and a curly quote as a straight one — it is
+  // reading rendered text and writing plain text, and this codebase's comments are full of
+  // both. Fifteen apply_patch calls failed in one run for exactly this. Only same-width
+  // substitutions are used, so an index into the normalised string is the same index in the
+  // original and the replacement still lands on the untouched bytes.
+  const flat = normaliseTypography(source);
+  const flatFind = normaliseTypography(find);
+  if (flat !== source || flatFind !== find) {
+    const hits = flat.split(flatFind).length - 1;
+    if (hits === 1) {
+      const at = flat.indexOf(flatFind);
+      return { next: source.slice(0, at) + replace + source.slice(at + find.length) };
+    }
+  }
 
   const src = source.split('\n');
   const needle = find.split('\n');

@@ -1,7 +1,7 @@
 ---
 id: outcome/investigate
 kind: outcome
-version: 9
+version: 10
 description: Multi-step investigation of a codebase or directory, ending in a findings report with open questions.
 tools:
   - list_dir
@@ -11,6 +11,9 @@ tools:
   - read_pdf
   - read_image
   - search_files
+  - run_command
+  - command_output
+  - stop_command
   - search_documents
   - derive_metric
   - sandbox_run
@@ -76,3 +79,15 @@ as findings with evidence, then open questions.
 At the step budget, or when the remaining sub-questions all need access you do not have.
 Report partial findings with the gaps named — a truthful partial answer beats a complete
 invented one.
+
+## Running things
+
+Investigating a live system often means running one: the project's own tests, `git log`,
+a linter, a health check. `run_command` is available here and it needs approval every time,
+with the command shown — so write the command you would defend, not the one that is easiest
+to type.
+
+Read-only where you can. `git log --oneline -20` tells you what you need without touching
+anything; `git checkout` does not belong in an investigation. Anything that takes real time
+goes in the background with `background: true` and is read with `command_output`, because
+waiting is capped at ten minutes and a command that hits the cap loses everything it printed.

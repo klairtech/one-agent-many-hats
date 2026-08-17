@@ -1,7 +1,7 @@
 ---
 id: outcome/answer
 kind: outcome
-version: 9
+version: 10
 description: Ad-hoc question against the workspace, answered with cited evidence.
 tools:
   - list_dir
@@ -11,6 +11,9 @@ tools:
   - read_pdf
   - read_image
   - search_files
+  - run_command
+  - command_output
+  - stop_command
   - search_documents
   - derive_metric
   - sandbox_run
