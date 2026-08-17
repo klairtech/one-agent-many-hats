@@ -1,7 +1,7 @@
 ---
 id: outcome/change
 kind: outcome
-version: 8
+version: 9
 description: Make a bounded edit to files in the workspace, reproduced first and verified after.
 tools:
   - list_dir
@@ -89,3 +89,13 @@ One change, matched to the surrounding code, verified by running something.
 If the change requires touching something the request did not authorise — a schema, a
 public interface, an auth path, a migration — stop and `ask_user`. Scope is theirs to
 widen, not yours.
+
+## What you can reach
+
+- **Reading before touching** — `list_dir`, `search_files`, `read_file`. Every file you edit
+  was read in this run.
+- **Changing** — `apply_patch` first, `write_file` only for a file that does not exist yet.
+  Both need approval and both show you the diff.
+- **Verifying** — `run_command` for the project's own tests, backgrounded and read when slow.
+- **Reaching out** — `ssh_run`, `send_email`, the browser. Rarely the right answer inside a
+  change; when they are, they still need approval per call.

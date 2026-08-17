@@ -1,7 +1,7 @@
 ---
 id: outcome/investigate
 kind: outcome
-version: 10
+version: 11
 description: Multi-step investigation of a codebase or directory, ending in a findings report with open questions.
 tools:
   - list_dir
@@ -91,3 +91,16 @@ Read-only where you can. `git log --oneline -20` tells you what you need without
 anything; `git checkout` does not belong in an investigation. Anything that takes real time
 goes in the background with `background: true` and is read with `command_output`, because
 waiting is capped at ten minutes and a command that hits the cap loses everything it printed.
+
+## What you can reach
+
+- **Finding and reading** — `list_dir`, `search_files`, `read_file`, `search_documents`,
+  `read_pdf`, `read_image`.
+- **Running something** — `run_command` and its pair, covered above.
+- **Reasoning about what you found** — `derive_metric`, the sandbox, `check_consistency`.
+- **Asking and remembering** — `ask_user`, `recall_memory`, `plan_tasks`, `update_task`.
+- **The browser** — `browser_open` and `browser_read`, for a system whose state is only
+  visible in a page.
+
+You cannot write. An investigation that ends in a change is two pieces of work, and the
+second one is `outcome/change`.

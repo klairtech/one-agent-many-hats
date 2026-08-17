@@ -94,9 +94,17 @@ export const buildTool: ToolHandler = {
       },
       required: ['name', 'description', 'parameters', 'code', 'rationale'],
     },
+    // Writing a tool changes the machine, so it is not a read-only act.
+    //
+    // `mutating` stays false because this handler writes nothing itself — the install goes
+    // through installGeneratedTool, and the *built* tool's own declaration decides what its
+    // process may touch. But at self-extending this installs immediately, and a profile
+    // whose promise is "the worst case is a wrong answer" cannot also mean "a permanent
+    // tool appeared on your device". propose_tool is still read-only: staging a contract
+    // changes nothing, which is the honest read-only version of this.
     mutating: false,
     network: false,
-    minProfile: 'read-only',
+    minProfile: 'assisted',
     // `parameters` is an arbitrary JSON Schema authored by the model, and our validator
     // models a subset of JSON Schema. Validating it emptied it to `{}` — the tool installed
     // with no schema, and the next provider call died on

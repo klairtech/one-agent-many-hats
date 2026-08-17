@@ -1,7 +1,7 @@
 ---
 id: outcome/answer
 kind: outcome
-version: 10
+version: 11
 description: Ad-hoc question against the workspace, answered with cited evidence.
 tools:
   - list_dir
@@ -73,3 +73,22 @@ gaps declared.
 If two discovery strategies have failed to locate the subject of the question, stop and
 report what you searched and what you would need. Do not read the tree exhaustively hoping
 to stumble on it.
+
+## What you can reach
+
+The allowlist is wider than the steps above describe, because a question can be about
+anything. Grouped by what it is for:
+
+- **Finding and reading** — `list_dir`, `search_files`, `read_file`, `search_documents`, and
+  `read_pdf` / `read_image` for the files `read_file` cannot open.
+- **Working out a number** — `derive_metric` for arithmetic that must be citable, the
+  sandbox for anything more involved, `check_consistency` before you deliver.
+- **Running something** — `run_command`, read with `command_output` and ended with
+  `stop_command`. Every one needs approval, with the command shown.
+- **Asking and remembering** — `ask_user` when a reading of the request would change the
+  work, `recall_memory` before you assume, `plan_tasks` when the request has parts.
+- **Improving the system** — the `propose_*` tools and `build_tool`. Drafts for a person,
+  never live changes.
+
+A tool being on this list does not mean it should be used. Each call should test something
+you cannot already answer.
