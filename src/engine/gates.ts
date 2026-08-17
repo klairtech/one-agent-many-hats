@@ -9,7 +9,13 @@
 
 import type { Artifact } from '../tools/artifacts.js';
 import { extractClaims, reconcile, type ReconcileReport } from './reconcile.js';
-import { askedInProse, completionClaimed, promisedFileNotWritten, startedButNeverRead } from './vigilance.js';
+import {
+  askedInProse,
+  completionClaimed,
+  leakedCorrectionNarration,
+  promisedFileNotWritten,
+  startedButNeverRead,
+} from './vigilance.js';
 import type { ToolObservation } from '../tools/types.js';
 import { unfinishedTasks } from '../tools/builtin/plan.js';
 
@@ -35,6 +41,7 @@ export const ENFORCEMENT_POINTS: Record<string, string> = {
   'gates.fileReallyExists': 'src/engine/gates.ts — fileReallyExists',
   'gates.backgroundRead': 'src/engine/gates.ts — backgroundRead',
   'gates.tasksFinished': 'src/engine/gates.ts — tasksFinished',
+  'gates.answerIsTheAnswer': 'src/engine/gates.ts — answerIsTheAnswer',
 };
 
 export function knownEnforcementPoints(): Set<string> {
@@ -150,7 +157,26 @@ export function runVerificationGates(input: VerificationInput): GateFinding[] {
   if (input.observations) findings.push(fileReallyExists(input));
   if (input.observations) findings.push(backgroundRead(input));
   if (input.runId) findings.push(tasksFinished(input));
+  findings.push(answerIsTheAnswer(input));
   return findings;
+}
+
+/**
+ * rule/answer-is-the-answer. Checked unconditionally — unlike the checks above, this one
+ * needs no tool observations, because the failure lives entirely in the text: the model
+ * narrated its own correction instead of replying with only the corrected answer.
+ */
+function answerIsTheAnswer(input: VerificationInput): GateFinding {
+  const check = leakedCorrectionNarration(input.draft);
+  return {
+    gate: 'gates.answerIsTheAnswer',
+    ruleId: 'rule/answer-is-the-answer',
+    passed: check.ok,
+    detail: check.detail,
+    ...(check.ok
+      ? {}
+      : { backtrack: 'send only the text after the rule — drop everything that talks about the correction itself' }),
+  };
 }
 
 /**

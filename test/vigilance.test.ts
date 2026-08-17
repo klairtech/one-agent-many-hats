@@ -10,7 +10,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { askedInProse, completionClaimed, destroyingUnread, editDistanceWithin, nearMiss, promisedFileNotWritten, stalled } from '../src/engine/vigilance.js';
+import { askedInProse, completionClaimed, destroyingUnread, editDistanceWithin, leakedCorrectionNarration, nearMiss, promisedFileNotWritten, stalled } from '../src/engine/vigilance.js';
+import { runVerificationGates } from '../src/engine/gates.js';
 import type { ToolObservation } from '../src/tools/types.js';
 
 function obs(over: Partial<ToolObservation>): ToolObservation {
@@ -219,4 +220,92 @@ test('a tool that failed and then succeeded does not count against completeness'
   // And recovery is per tool: another tool succeeding proves nothing about this one.
   const wrongTool = [obs({ tool: 'search_files', ok: false }), obs({ tool: 'read_file', ok: true })];
   assert.equal(completionClaimed(draft, wrongTool).ok, false, 'a different tool cleared the failure');
+});
+
+
+/**
+ * The exact shape that shipped: narration about correcting a previous draft, a horizontal
+ * rule, then the real answer — delivered whole because nothing distinguished the two parts.
+ */
+test('narration before a "---" divider is caught, the real answer after it is not', () => {
+  const leaked = [
+    "You're right. Let me verify my actual tool list from the system preamble at the start of this run.",
+    '',
+    'Looking back at what I was given: `list_dir`, `read_file`, `search_files`.',
+    '',
+    'Now I can deliver the corrected answer:',
+    '',
+    '---',
+    '',
+    "I'm an agent that runs locally on your machine and works through tools. " +
+      'I change hats for different kinds of work, but stay one continuous agent with memory across runs.',
+  ].join('\n');
+  const blocked = leakedCorrectionNarration(leaked);
+  assert.equal(blocked.ok, false, 'a narrated correction shipped as the answer');
+  assert.match(blocked.detail, /you're right/i);
+
+  // The part after the rule, delivered alone, is exactly what should have shipped.
+  const clean = leakedCorrectionNarration(
+    "I'm an agent that runs locally on your machine and works through tools. " +
+      'I change hats for different kinds of work, but stay one continuous agent with memory across runs.',
+  );
+  assert.equal(clean.ok, true, clean.detail);
+});
+
+test('a horizontal rule with no narration in front of it is left alone', () => {
+  // Markdown tables, changelogs and ordinary dividers all use "---" for reasons that have
+  // nothing to do with this failure, and must not trip the gate.
+  const ordinary = [
+    '## Summary',
+    '',
+    'Three files changed.',
+    '',
+    '---',
+    '',
+    '## Detail',
+    'Here is the breakdown of what changed and why, in full.',
+  ].join('\n');
+  assert.equal(leakedCorrectionNarration(ordinary).ok, true);
+});
+
+test('narration with no divider, or a divider with nothing real after it, does not trip the gate', () => {
+  // No "---" at all: the check has nothing to split on, so it does not guess.
+  assert.equal(
+    leakedCorrectionNarration("You're right, let me verify — here is what actually happened.").ok,
+    true,
+  );
+  // A trailing rule with almost nothing after it is not a buried second answer.
+  assert.equal(leakedCorrectionNarration("You're right, let me verify.\n\n---\n\nok").ok, true);
+});
+
+
+/** The gate that actually blocks delivery, not just the string check underneath it. */
+test('gates.answerIsTheAnswer blocks a narrated correction and passes a clean one', () => {
+  const leaked = [
+    "You're right. Let me verify my actual tool list.",
+    '',
+    'Now I can deliver the corrected answer:',
+    '',
+    '---',
+    '',
+    'I read and search this workspace, and can write files or run commands when asked.',
+  ].join('\n');
+
+  const blockedFindings = runVerificationGates({
+    draft: leaked,
+    artifacts: [],
+    reviewRequired: 'none',
+    usedTools: false,
+  });
+  const blocked = blockedFindings.find((f) => f.gate === 'gates.answerIsTheAnswer');
+  assert.equal(blocked?.passed, false, 'a narrated correction was delivered without being caught');
+  assert.equal(blocked?.ruleId, 'rule/answer-is-the-answer');
+
+  const cleanFindings = runVerificationGates({
+    draft: 'I read and search this workspace, and can write files or run commands when asked.',
+    artifacts: [],
+    reviewRequired: 'none',
+    usedTools: false,
+  });
+  assert.equal(cleanFindings.find((f) => f.gate === 'gates.answerIsTheAnswer')?.passed, true);
 });
