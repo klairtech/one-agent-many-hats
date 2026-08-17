@@ -12,7 +12,9 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 
 import { getCredential, readCredentials } from '../../core/credentials.js';
-import { generatedToolsDir, packageRoot } from '../../core/paths.js';
+import { existsSync, readdirSync, realpathSync } from 'node:fs';
+
+import { generatedToolsDir, packageRoot, toolDepsDir } from '../../core/paths.js';
 import type { ToolHandler, ToolResult } from '../types.js';
 import { readGeneratedCode, type GeneratedTool } from './store.js';
 
@@ -39,10 +41,20 @@ interface RunnerReply {
  */
 export function permissionFlags(tool: GeneratedTool, workspaceRoot: string): string[] {
   const flags = ['--permission'];
+  // Read, never write. The shelf holds packages a person installed; a tool may import them
+  // and may not change them, so a compromised handler cannot leave something behind on the
+  // shelf for the next tool to import.
+  //
+  // Realpath'd first. Node compares resolved paths, and on macOS a temp or home directory
+  // reaches the shelf through /var -> /private/var — so a grant written with the unresolved
+  // path is a grant that never matches the file being opened.
+  const shelf = existsSync(toolDepsDir()) ? realpathSync(toolDepsDir()) : '';
+  if (shelf) flags.push(`--allow-fs-read=${shelf}/`);
   if (tool.mutating) {
     // Scoped to the workspace even when granted. A mutating tool is allowed to change the
     // user's project; it is not allowed to change the runtime that supervises it.
-    flags.push(`--allow-fs-read=${workspaceRoot}/`, `--allow-fs-write=${workspaceRoot}/`);
+    const root = existsSync(workspaceRoot) ? realpathSync(workspaceRoot) : workspaceRoot;
+    flags.push(`--allow-fs-read=${root}/`, `--allow-fs-write=${root}/`);
   }
   return flags;
 }
@@ -154,7 +166,15 @@ function runIsolated(request: {
         // A near-empty environment: the child gets the network switch and nothing else.
         // Inheriting the parent's env would hand every generated tool the user's shell
         // secrets, which is a larger grant than any of these tools asked for.
-        env: request.network ? { HATS_TOOL_NETWORK: '1' } : {},
+        env: {
+          ...(request.network ? { HATS_TOOL_NETWORK: '1' } : {}),
+          ...(existsSync(toolDepsDir())
+            ? {
+                HATS_TOOL_DEPS: realpathSync(toolDepsDir()),
+                HATS_TOOL_DEPS_LIST: shelfPackages().join(', '),
+              }
+            : {}),
+        },
       },
     );
 
@@ -213,4 +233,36 @@ function runIsolated(request: {
       }),
     );
   });
+}
+
+
+/**
+ * What is on the shelf right now.
+ *
+ * Read fresh rather than cached: a person installs a package and the very next run should
+ * be able to use it, without restarting anything. Scoped packages are reported with their
+ * scope so the name in the list is the name you would import.
+ */
+export function shelfPackages(root = toolDepsDir()): string[] {
+  const modules = path.join(root, 'node_modules');
+  const out: string[] = [];
+  let entries: string[];
+  try {
+    entries = readdirSync(modules);
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    if (entry.startsWith('.')) continue;
+    if (entry.startsWith('@')) {
+      try {
+        for (const inner of readdirSync(path.join(modules, entry))) out.push(`${entry}/${inner}`);
+      } catch {
+        // An unreadable scope directory is not worth failing a tool call over.
+      }
+      continue;
+    }
+    out.push(entry);
+  }
+  return out.sort();
 }

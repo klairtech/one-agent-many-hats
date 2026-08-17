@@ -352,6 +352,9 @@ async function main(): Promise<number> {
       return 0;
     }
 
+    case 'tools':
+      return toolShelf(args);
+
     case 'proposals':
       await showProposals();
       return 0;
@@ -707,6 +710,7 @@ ${paint('usage', 'bold')}
   hats run "<request>"            one shot, then exit
   hats init                       connect a model and describe this workspace
   hats mcp                        MCP servers and the tools they contribute
+  hats tools [list|add <pkg>|remove <pkg>]   packages a tool the agent writes may import
 
 ${paint('inspect', 'bold')}
   hats doctor                     config, providers, tiers, registry, reachability
@@ -755,3 +759,73 @@ main()
     }
     process.exitCode = 1;
   });
+
+
+/**
+ * The package shelf: what a tool the agent writes is allowed to import.
+ *
+ * Installing is a person's job, deliberately. `npm install` runs arbitrary code from the
+ * registry at install time, so an agent that could install its own dependencies would have
+ * a way to execute anything at all — which is the single thing this design exists to
+ * prevent. The agent may read the shelf and ask for something; you decide.
+ */
+async function toolShelf(args: Args): Promise<number> {
+  const { toolDepsDir } = await import('../core/paths.js');
+  const { shelfPackages } = await import('../tools/generated/handler.js');
+  const dir = toolDepsDir();
+  const action = args.positional[0] ?? 'list';
+
+  if (action === 'list') {
+    const installed = shelfPackages();
+    out.heading('packages a generated tool may import');
+    if (installed.length === 0) {
+      out.dim(`nothing installed. ${dir}`);
+      out.dim('add one with: hats tools add pg');
+      return 0;
+    }
+    for (const name of installed) out.line(`  ${name}`);
+    out.dim(dir);
+    return 0;
+  }
+
+  if (action !== 'add' && action !== 'remove') {
+    out.fail(`unknown: hats tools ${action}. Use list, add <package> or remove <package>.`);
+    return 1;
+  }
+
+  const names = args.positional.slice(1);
+  if (names.length === 0) {
+    out.fail(`hats tools ${action} needs at least one package name`);
+    return 1;
+  }
+
+  const { mkdir, writeFile } = await import('node:fs/promises');
+  const { existsSync } = await import('node:fs');
+  const path = await import('node:path');
+  await mkdir(dir, { recursive: true });
+  // A package.json so npm treats this as a project rather than walking up and installing
+  // into whatever happens to be above it.
+  if (!existsSync(path.join(dir, 'package.json'))) {
+    await writeFile(
+      path.join(dir, 'package.json'),
+      `${JSON.stringify({ name: 'hats-tool-deps', private: true, description: 'Packages agent-written tools may import.' }, null, 2)}\n`,
+    );
+  }
+
+  const { spawn } = await import('node:child_process');
+  out.dim(`npm ${action === 'add' ? 'install' : 'uninstall'} ${names.join(' ')}  (in ${dir})`);
+  const code = await new Promise<number>((resolve) => {
+    const child = spawn('npm', [action === 'add' ? 'install' : 'uninstall', '--no-audit', '--no-fund', ...names], {
+      cwd: dir,
+      stdio: 'inherit',
+    });
+    child.on('close', (c) => resolve(c ?? 1));
+    child.on('error', () => resolve(1));
+  });
+  if (code !== 0) {
+    out.fail(`npm exited ${code}`);
+    return code;
+  }
+  out.ok(`shelf now holds: ${shelfPackages().join(', ') || 'nothing'}`);
+  return 0;
+}

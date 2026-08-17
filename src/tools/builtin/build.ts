@@ -18,17 +18,31 @@ import { atLeast } from '../../engine/autonomy.js';
 import { ALL_TOOLS } from '../index.js';
 import { assertUsableName, listGeneratedTools, type GeneratedTool } from '../generated/store.js';
 import { smokeTest } from '../generated/verify.js';
+import { shelfPackages } from '../generated/handler.js';
 import { generatedHandler } from '../generated/handler.js';
 import { installGeneratedTool } from '../generated/install.js';
 import type { ToolHandler, ToolResult } from '../types.js';
 
 const PROFILES = new Set(['read-only', 'assisted', 'trusted']);
 
+const BUILD_TOOL_DESCRIPTION =
+  'Write a new tool and stage it for installation. Use this when the work needs a capability no tool in your list has — a connector to a database or an API, a format this runtime cannot read — rather than reporting that you cannot do it. You write the handler and declare what it needs: mutating for filesystem writes, network for egress. Those declarations are enforced by the process it runs in, so declare accurately: a tool that says mutating:false and then writes will fail at the write, not at review.';
+
 export const buildTool: ToolHandler = {
   spec: {
     name: 'build_tool',
-    description:
-      'Write a new tool and stage it for installation. Use this when the work needs a capability no tool in your list has — a connector to a database or an API, a format this runtime cannot read — rather than reporting that you cannot do it. You write the handler and declare what it needs: mutating for filesystem writes, network for egress. Those declarations are enforced by the process it runs in, so declare accurately: a tool that says mutating:false and then writes will fail at the write, not at review.',
+    // A getter, because the shelf changes while the runtime is running: someone installs a
+    // driver and the very next request should offer it. A string fixed at module load would
+    // tell the model the shelf was empty for the rest of the session.
+    get description(): string {
+      const shelf = shelfPackages();
+      return (
+        BUILD_TOOL_DESCRIPTION +
+        (shelf.length
+          ? ` Packages available to import with ctx.import(): ${shelf.join(', ')}.`
+          : ' The package shelf is empty, so only node: builtins can be imported — if a package would make the tool possible, name it and say that `hats tools add <name>` installs it.')
+      );
+    },
     parameters: {
       type: 'object',
       properties: {
@@ -49,7 +63,7 @@ export const buildTool: ToolHandler = {
         code: {
           type: 'string',
           description:
-            'An ES module exporting `export async function run(args, ctx)` and returning {summary, payload}. ctx gives you workspaceRoot, profile, credentials (an object keyed by the names you list below) and ctx.import(specifier) for node builtins. Constraints that are not negotiable: no npm packages (there is no node_modules — an import of @aws-sdk or similar fails to resolve), no import from this repository, and no top-level await on anything slow. For an API, call its HTTP endpoint with fetch and sign the request yourself. Keep comments to the ones that explain a decision a reader could not infer; narrating what the next line does costs tokens on every retry and tells nobody anything.',
+            'An ES module exporting `export async function run(args, ctx)` and returning {summary, payload}. ctx gives you workspaceRoot, profile, credentials (an object keyed by the names you list below) and ctx.import(specifier) for node builtins. Packages: `await ctx.import("pg")` works for anything on the shelf, and the shelf is listed for you below — a name that is not on it cannot be installed by you and by anything else in this run, so use a node: builtin or say which package a person should add. No import from this repository, and no top-level await on anything slow. For an API, call its HTTP endpoint with fetch and sign the request yourself. Keep comments to the ones that explain a decision a reader could not infer; narrating what the next line does costs tokens on every retry and tells nobody anything.',
         },
         mutating: {
           type: 'boolean',

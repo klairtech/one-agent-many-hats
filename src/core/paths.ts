@@ -68,6 +68,24 @@ export function generatedToolsDir(): string {
 }
 
 /**
+ * Packages a generated tool is allowed to import.
+ *
+ * A handler is loaded from a `data:` URL, which has no directory to resolve a bare
+ * specifier against — so `import 'pg'` could never work, and every connector needing a
+ * real driver was out of reach. That was an accident of how the code is loaded rather than
+ * a safety property, and it put Postgres, MySQL, Snowflake and S3 beyond what the agent
+ * could build.
+ *
+ * The shelf fixes it without handing anything to the model. *You* install packages here;
+ * the agent may import what it finds and cannot add to it. There is no path by which a
+ * tool installs a dependency, because an install runs arbitrary code at install time and
+ * that is the one thing this whole design is arranged to prevent.
+ */
+export function toolDepsDir(): string {
+  return path.join(hatsHome(), 'deps');
+}
+
+/**
  * The other home for an agent-written tool: inside the project it serves.
  *
  * Device tools are private to one machine, which is right for a connector holding your own
