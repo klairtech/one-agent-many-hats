@@ -338,3 +338,49 @@ export function startedButNeverRead(
       `what they did. Starting one returns an id, not a result.`,
   };
 }
+
+/** A line that is nothing but a markdown horizontal rule. */
+const HR_LINE = /^[ \t]*-{3,}[ \t]*$/m;
+
+/** First-person narration about correcting or re-checking a previous draft. */
+const CORRECTION_NARRATION =
+  /\b(you'?re right|let me (?:verify|check|re-?check)|looking back at what|now i can (?:deliver|give|provide|write)|here'?s the corrected|here is the corrected|the corrected answer is)\b/i;
+
+/**
+ * Delivered text that is still narrating its own correction, with the real answer sitting
+ * after a horizontal rule.
+ *
+ * After a review verdict of FAIL, the loop tells the model to fix the problems and produce
+ * the final answer. A capable model sometimes complies by *showing its work*: "You're
+ * right, let me verify... [reasoning] ... Now I can deliver the corrected answer: ---
+ * [actual answer]". Nothing downstream reads only the part after "---" — the whole turn
+ * becomes the draft, review sees the real answer buried in it and can still pass it, and
+ * the narration ships to the person reading it verbatim, tool list and all.
+ *
+ * The model cannot see this happening. From where it stands it produced a helpful,
+ * transparent explanation of how it fixed the problem; it has no way to know that "helpful
+ * explanation" and "the text that gets delivered" are the same variable in this codebase.
+ *
+ * Narrow on purpose, matching the shape actually seen rather than "starts by talking about
+ * itself" in general: a self-referential correction phrase *before* a standalone "---" line,
+ * with enough real content after it to be an answer rather than a stray rule.
+ */
+export function leakedCorrectionNarration(draft: string): ClaimCheck {
+  const hr = HR_LINE.exec(draft);
+  if (!hr) return { ok: true, detail: 'no horizontal rule in the answer' };
+
+  const before = draft.slice(0, hr.index);
+  const after = draft.slice(hr.index + hr[0].length).trim();
+
+  if (!CORRECTION_NARRATION.test(before)) return { ok: true, detail: 'nothing before the rule reads as narration' };
+  if (after.length < 40) return { ok: true, detail: 'too little follows the rule to be a buried answer' };
+
+  return {
+    ok: false,
+    detail:
+      `the delivered text opens with commentary about correcting or re-checking a previous draft ` +
+      `("${before.trim().slice(0, 140)}") before a horizontal rule, with what reads like the real ` +
+      `answer after it. Reply with only the text meant for the person reading this — everything ` +
+      `before "---" was written for the record of fixing it, not for them.`,
+  };
+}

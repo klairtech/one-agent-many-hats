@@ -786,7 +786,11 @@ function suggestFollowUp(r) {
     }
   }
 
-  return 'What else should I look at?';
+  // The generic fallback presumed the answer was an investigation of the workspace, which
+  // read as a non sequitur after anything else — a question about the agent's own
+  // capabilities, a plain factual answer with no artifact, a yes/no. Something that invites
+  // the next thing without guessing what kind of answer this was.
+  return 'What should I do with this?';
 }
 
 const EXAMPLES = [

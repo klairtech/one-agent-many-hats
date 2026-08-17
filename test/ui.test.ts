@@ -534,10 +534,14 @@ test('the composer suggests a follow-up drawn from what the run did', async () =
     /How did you arrive at 17 rule files/,
   );
 
-  // A figure with no evidence behind it is not something to ask about.
+  // A figure with no evidence behind it is not something to ask about, so this falls all
+  // the way to the generic fallback — which used to presume an investigation ("What else
+  // should I look at?"), a non sequitur after a plain factual answer or a question about
+  // the agent itself. Now it invites the next step without guessing what kind of answer
+  // this was.
   assert.equal(
     suggestFollowUp({ ok: true, outcomeId: 'outcome/answer', artifactCount: 0, answer: '**17 rule files**' }),
-    'What else should I look at?',
+    'What should I do with this?',
   );
 });
 

@@ -598,7 +598,12 @@ async function runAgentInner(opts: RunOptions, runId: string, slug: string): Pro
           if (reviewVerdict.verdict !== 'PASS') {
             await record({
               role: 'user',
-              content: `The ${reviewPass} found problems:\n${reviewVerdict.detail}\n\nAddress them and produce the final answer.`,
+              content:
+                `The ${reviewPass} found problems:\n${reviewVerdict.detail}\n\n` +
+                `Fix them, then reply with only the corrected answer — the exact text the person ` +
+                `should read, nothing else. Do not narrate what was wrong or what you changed; do ` +
+                `not write "here is the corrected answer" or anything like it. Whatever this reply ` +
+                `contains is what gets delivered verbatim.`,
             }, true);
             stage = 'act';
             // The corrected draft is a different draft: it has to be reviewed again.
