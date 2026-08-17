@@ -42,7 +42,7 @@ runtime enforces and prose the model reads.
 **Rules** are guardrails that declare their own strength. Some are instructions. Some are
 coded checks that block. Some are boundaries that were true before the model woke up.
 
-**Tools** are the only way it can affect anything at all. Sixteen ship with it, plus
+**Tools** are the only way it can affect anything at all. Thirty-four ship with it, plus
 whatever you connect over MCP.
 
 Change how it behaves by editing a markdown file. No redeploy, no code.
@@ -111,6 +111,59 @@ stops being true, the build says so.
 
 It is defence in depth against a model writing something reckless. It is **not** a container,
 and the ADR says that at the point of use rather than in a footnote.
+
+### It reads what is not text
+
+`read_file` returns numbered lines, and a PDF has none — so it refused, and refusing was the
+whole answer. A workspace with a report in it held nothing.
+
+`read_pdf` pulls the text out here, with no dependency and no model involved. That turned out
+to be a lesson in half-working: my first version returned kilobytes of font tables as though
+they were the document, and on a PDF written by a word processor it returned mojibake. Both
+are worse than an error, because both are *quotable* — the model cites it and the reader
+cannot tell it from the file.
+
+The cause was mine. A subset font numbers its glyphs from zero for its own use, so code 3 is
+`a` in one font and `%` in the next, and I was merging every font's table in the file into
+one dictionary. The last font loaded decoded everybody's text. It walks the object graph now
+and applies each font's own table as the page switches fonts, which turned
+`PPPPeriodc fmfarPPeriodrec` back into `WORKING PAPER One Agent, Many Hats`. When the result
+still does not read as language it says so and returns nothing, because a garbled quotation
+is worse than a gap.
+
+`read_image` hands the pixels to the model, so it works on a model that can see and honestly
+reports only the file's shape on one that cannot.
+
+### Work that takes longer than a step
+
+`run_command` waited, capped at ten minutes, and a command that hit the cap returned
+`TIMEOUT` with nothing — the work had happened and every line it printed was thrown away. No
+test suite, no build, no dev server you could point a browser at.
+
+It can start one in the background now and read it as it goes, and it kills the whole process
+group when it stops one, because `npm run dev` is npm forking node and killing npm leaves
+node holding the port.
+
+The interesting part is the failure this creates. Starting a background command **succeeds**,
+in milliseconds. From inside the loop, "I started the test suite" and "the tests pass" are
+the same shape: a tool call that did not fail. Every other check in this codebase compares
+the answer against what the tools *did*, and here that is not enough — so a gate blocks an
+answer that talks about a build or a suite when nothing ever read the job. It does not
+require the job to have finished. "Still running after four minutes" is an honest sentence,
+and only someone who looked can write it.
+
+### It writes down what it is going to do
+
+Ask for six things and get four, reported as though it were six. Nobody is lying — everything
+in the answer is true, and by the last step the earlier parts have been through several
+rounds of summarising.
+
+That one cannot be caught by looking at tool results, because **a piece of work that was
+never attempted leaves no failure behind**. No error, no gap, nothing to notice. The only
+artefact of it is the line the run wrote about intending to do it. So it writes the list down
+with `plan_tasks`, and a gate refuses delivery while anything on it is still open. Dropping a
+task is allowed and needs a reason — "I did not check the staging config, there is no
+credential for it here" is worth more to you than silence — and the reason goes in the answer.
 
 ### It remembers, and it changes
 
@@ -228,10 +281,19 @@ There is no clever static analysis of the generated source, deliberately —
 `globalThis['fe'+'tch']` defeats any regex, and a check that can be evaded is worse than
 none because it reads as protection.
 
-Generated tools live in `~/.hats/tools`, outside your repository, so nothing an agent wrote
-can reach a commit by accident and revoking one is deleting a directory. They still pass
-through the same executor as everything else. And a tool built to answer one question can
-be kept for the conversation only, so a one-off leaves nothing behind.
+A built tool has three possible homes, and they are not interchangeable. **Conversation**
+means it works now and is gone when the run ends, so a one-off exploration leaves nothing
+behind. **Device** is `~/.hats/tools`, outside any repository, which is right for a connector
+wired to your own account — nobody else could use it anyway. **Workspace** writes it into a
+`hats-tools` folder inside the project, where it can be committed and arrives already working
+for whoever clones next; that is the right home when the tool is part of how *this project*
+works rather than how *this person* works. The question to ask is whose tool it is. A parser
+for one repository's log format belongs to the repository.
+
+Where it lives decides who else gets it and nothing else — the flags its process starts with
+come from its manifest either way. A workspace tool beats a device tool of the same name,
+because the alternative means a tool committed to a repository behaving differently depending
+on what each person happened to build first. Neither can take a built-in's name.
 
 The honest edge: `network: true` is a real widening, and it is what a connector needs by
 definition. It is visible in the manifest, in the Tools tab, and in the audit log.
@@ -293,10 +355,32 @@ sits behind the same network switch as everything else that leaves your machine.
 ### It uses other people's tools
 
 Any MCP server's tools become ordinary tools here, named `mcp__server__tool`, going through
-the same executor and the same approval as everything built in. Browser automation is not
-something I wrote; it is a Playwright server you connect. A tool the server does not mark
-read-only is treated as able to change things, because the annotation is written by the same
-party whose behaviour it describes.
+the same executor and the same approval as everything built in. A tool the server does not
+mark read-only is treated as able to change things, because the annotation is written by the
+same party whose behaviour it describes.
+
+**You can sign in to one.** For a long time a connector could carry a static header and
+nothing else, which quietly excluded almost everything worth connecting — issues, documents,
+error reports all authenticate the other way. It speaks OAuth now: press **Sign in** and it
+finds the provider from the 401, registers itself, and sends you there to approve.
+
+The property that matters is that no password comes near this process. The browser goes to
+your provider; this process learns an authorization code, which is worthless without a
+verifier it never sent anywhere. PKCE is S256 and a provider that offers only the weaker
+method is **refused rather than downgraded** — the code comes back over a loopback redirect
+that any local process could race for, and the verifier is the only thing that makes winning
+that race useless. The `state` is checked before the code is read. Tokens land in
+`credentials.json` at 0600, one key per connector, and removing a connector deletes its
+token with it.
+
+The connectors page carries a short list that was **checked from this machine** rather than
+remembered: Linear, Notion, Sentry, Asana and Jira/Confluence for the sign-in kind, Context7,
+Playwright and the protocol's own reference server for the local kind. Every entry names what
+it adds, what it costs you, and what was actually observed. Nothing is preloaded or connected
+— adding one is a click you make, because an MCP server is someone else's code running on
+your machine. Two that work and are deliberately absent say why on the page: GitHub, which
+has no dynamic client registration and so needs a client id you create by hand, and PayPal,
+which works and moves money.
 
 I did not implement sampling. A server that can ask the model to generate is a server that
 can steer your agent, and that is exactly the authority this whole design keeps out of
@@ -304,6 +388,23 @@ things it merely read. What connecting a server does and does not change is writ
 [`rule/mcp-servers-are-third-party`](packs/rules/mcp-servers-are-third-party.md) — worth
 reading before you connect one, because the network guard governs *our* tools and cannot
 govern a process we did not write.
+
+### The panel keeps your place
+
+Every view used to be rebuilt from the server when you opened it, so leaving a page and
+coming back threw away the conversation you were in the middle of, the file you had opened
+and where you had scrolled to. Pages are parked now rather than discarded — the DOM is moved
+aside, so click handlers survive and a run streaming in the background keeps writing into
+nodes that are simply off screen for a while.
+
+Four views are the exception, and for one reason: they are what the agent runs on. A stale
+registry claims a tool that is gone, a stale proposal list offers a button for something
+already promoted, and a stale connector page shows a credential that was revoked. Anything
+describing the agent's own capability is re-read every time; everything else is yours.
+
+Proposals carry their action on the row — **Repair**, **Install**, **Promote** — rather than
+behind a chevron that reads as a status, and a repair streams into the chat where you can
+watch it and answer anything it asks.
 
 ### It can run when you are not there — carefully
 
@@ -412,6 +513,19 @@ some I do not.
   Watching a 7B search for `//working paper//` four times because it wrapped a regex in
   slashes taught me more about tool descriptions than any amount of design did. It strips
   the slashes now.
+- **`read_pdf` reads text, not layout.** PDF has no concept of a paragraph, only glyphs at
+  coordinates, so reading order follows the order the generator wrote them — right for
+  ordinary prose, unreliable for multi-column pages and tables. A scanned PDF is images of
+  text and contains no text to find; it says so and returns nothing rather than a fragment.
+- **`read_image` needs a model that can see.** On one that cannot, the call reports the
+  file's type and size and nothing about what is in it.
+- **Signing in to a connector is verified up to the point where you take over.** Five
+  providers were checked from a real machine through this code — the 401, the metadata, the
+  authorization server, dynamic registration, S256 — and the whole exchange runs end to end
+  against a local authorization server that verifies the PKCE challenge itself. What I have
+  not done is complete a sign-in at one of those five, because that needs somebody's account.
+  If a real provider does something the spec did not lead me to expect, that is where it will
+  surface.
 - **Decisions are serial by design.** The critic and the guardian are hats on one timeline,
   so you wait for them. That is the price of being able to reconstruct what happened.
 - **A tool the agent wrote is only as good as the model that wrote it.** The runtime
@@ -443,7 +557,7 @@ can be captured, and put the boundaries where its output is not consulted.
 
 The working paper in the repo root is the argument this implements.
 
-There are 178 tests and they run in a couple of seconds without touching the network,
+There are 273 tests and they run in a couple of seconds without touching the network,
 because the whole engine can run against a scripted model. The sandbox isolation claims are
 assertions in that suite rather than sentences in a document — the same is true of the
 allowlist intersection, the path guard, the grant scopes and the unattended denials. If you

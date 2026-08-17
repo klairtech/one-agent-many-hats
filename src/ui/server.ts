@@ -1245,9 +1245,14 @@ export async function startUi(
           ask: (r) => askHuman('clarification', r),
           approve: async (r) => (await askHuman('approval', r)) === 'yes',
         });
-        // Re-key under the real run id so feedback and the run log line up.
-        runs.delete(live.runId);
+        // Re-keyed under the real run id so feedback and the run log line up — but the old
+        // key is *kept* pointing at the same run. A client is handed the pending id when the
+        // run starts and subscribes a moment later; deleting the key made that subscription
+        // 404 for anything that finished first, and the page then sat on "working" forever
+        // because the stream it was waiting for never existed. Both ids resolve now.
+        const pendingId = live.runId;
         live.runId = result.runId;
+        runs.set(pendingId, live);
         live.result = result;
         runs.set(result.runId, live);
         history = result.messages.slice(-40);

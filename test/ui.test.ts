@@ -540,3 +540,19 @@ test('the composer suggests a follow-up drawn from what the run did', async () =
     'What else should I look at?',
   );
 });
+
+
+/**
+ * A run stream that dies has to say so.
+ *
+ * There was no error handler on the EventSource at all, so any failure — the run id not
+ * resolving, the panel restarting, a dropped connection — left the word "working" on screen
+ * with the run already finished. The page is one long template literal and this is easy to
+ * lose in an edit, so it is asserted rather than trusted.
+ */
+test('the chat stream installs an error handler, so a dead stream cannot hang on working', () => {
+  const page = renderPage('t');
+  assert.match(page, /source\.onerror\s*=/, 'the run stream has no error handler');
+  assert.match(page, /readyState/, 'a transient reconnect must be told apart from a closed stream');
+  assert.match(page, /Lost the connection to this run/, 'a dead stream should say so in the thread');
+});
